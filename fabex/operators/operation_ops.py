@@ -4,6 +4,8 @@ Blender Operator definitions are in this file.
 They mostly call the functions from 'utils.py'
 """
 
+import os
+
 import bpy
 from bpy.props import EnumProperty
 from bpy.types import (
@@ -211,23 +213,54 @@ class CamOperationRemove(Operator):
                 operation was successfully executed.
         """
 
+        from ..utilities.simple_utils import get_simulation_path
+
         scene = context.scene
-        try:
-            if len(scene.cam_operations) == 0:
-                # # Close Sidebar
-                # view3d = [a for a in context.screen.areas if a.type == "VIEW_3D"][0]
-                # if view3d.regions[5].active_panel_category == "CNC":
-                #     view3d.spaces[0].show_region_ui = False
-                return {"CANCELLED"}
-            active_op = scene.cam_operations[scene.cam_active_operation]
-            active_op_object = bpy.data.objects[active_op.name]
-            scene.objects.active = active_op_object
-            bpy.ops.object.delete(True)
-        except (AttributeError, KeyError, RuntimeError) as e:
-            log.warning(f"Could not delete operation object: {e}")
+        if len(scene.cam_operations) == 0:
+            return {"CANCELLED"}
 
         ao = scene.cam_operations[scene.cam_active_operation]
-        log.info(was_hidden_dict)
+
+        # Delete CAM path object and its mesh
+        if ao.path_object_name and ao.path_object_name in bpy.data.objects:
+            path_ob = bpy.data.objects[ao.path_object_name]
+            mesh = path_ob.data
+            bpy.data.objects.remove(path_ob, do_unlink=True)
+            if mesh and mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+            log.info(f"Deleted path object: {ao.path_object_name}")
+
+        # Delete simulation EXR file, its Blender image, texture, and sim object
+        if ao.path_object_name:
+            exr_path = get_simulation_path() + ao.path_object_name + "_sim.exr"
+            exr_basename = os.path.basename(exr_path)
+
+            # Find the loaded EXR image by matching filename
+            exr_image = next(
+                (img for img in bpy.data.images if os.path.basename(img.filepath) == exr_basename),
+                None,
+            )
+
+            if exr_image is not None:
+                # Find simulation object via its displacement texture -> image link
+                for tex in list(bpy.data.textures):
+                    if getattr(tex, "image", None) == exr_image:
+                        for ob in list(bpy.data.objects):
+                            for mod in ob.modifiers:
+                                if mod.type == "DISPLACE" and mod.texture == tex:
+                                    sim_mesh = ob.data
+                                    bpy.data.objects.remove(ob, do_unlink=True)
+                                    if sim_mesh and sim_mesh.users == 0:
+                                        bpy.data.meshes.remove(sim_mesh)
+                                    log.info(f"Deleted simulation object for: {ao.name}")
+                                    break
+                        bpy.data.textures.remove(tex)
+                bpy.data.images.remove(exr_image)
+
+            if os.path.isfile(exr_path):
+                os.remove(exr_path)
+                log.info(f"Deleted simulation EXR: {exr_path}")
+
         if ao.name in was_hidden_dict:
             del was_hidden_dict[ao.name]
 
