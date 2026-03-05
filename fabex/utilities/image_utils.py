@@ -1246,19 +1246,26 @@ def load_rest_machining_zmap(o):
         p_iy = np.clip(np.round(prior_py_f[iy_in]).astype(int), 0, prior_resy - 1)
         result[np.ix_(ix_in, iy_in)] = prior_world_z[np.ix_(p_ix, p_iy)]
 
+    prior_max_z = prior_op.max.z
+    effective_threshold = prior_op.skin + o.rest_machining_threshold
     valid = result[result != np.inf]
     inf_count = int(np.sum(result == np.inf))
-    effective_threshold = prior_op.skin + o.rest_machining_threshold
+    # Count pixels where roughing actually cut below stock surface.
+    cut_mask = valid < prior_max_z - o.rest_machining_threshold
+    cut_count = int(np.sum(cut_mask))
+    at_stock = len(valid) - cut_count
     log.info(
         f"rest_zmap: shape={result.shape}, "
-        f"valid={len(valid)}, inf(uncut)={inf_count}, "
+        f"valid={len(valid)}, inf(unreachable)={inf_count}, "
+        f"at_stock={at_stock}, cut={cut_count}, "
         f"prior_z range=[{valid.min():.4f}, {valid.max():.4f}], "
         f"prior_op.skin={prior_op.skin * 1000:.3f} mm, "
         f"threshold={o.rest_machining_threshold * 1000:.3f} mm, "
         f"effective_skip_threshold={effective_threshold * 1000:.3f} mm"
     )
 
-    # Store prior_op skin so chunk_utils can use it in the skip comparison.
+    # Store prior_op skin and stock-surface Z so chunk_utils can use them.
     o.rest_prior_skin = prior_op.skin
+    o.rest_prior_max_z = prior_max_z
 
     return result

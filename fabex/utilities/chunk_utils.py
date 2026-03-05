@@ -846,17 +846,24 @@ async def sample_chunks(o, pathSamples, layers):
                     timing_add(samplingtime)
                     z = get_sample_image((xs, ys), o.offset_image, minz) + o.skin
 
-                    # Rest machining: skip points where the prior op already cut
-                    # to within its skin depth of the finishing target.
-                    # prior_z ≈ model_z + prior_skin (where roughing reached),
-                    # so prior_skin must be included in the skip threshold.
+                    # Rest machining: skip points where the prior op cleared the
+                    # material to within (skin + threshold) of the finishing target.
+                    # Two conditions must both be true:
+                    #   1. Roughing actually cut below the stock surface (not just
+                    #      uncut stock or a shallow feature the roughing couldn't
+                    #      reach because its skin > feature depth).
+                    #   2. Roughing left stock within (skin + threshold) of the
+                    #      finishing cutter's target Z.
                     if o.use_rest_machining and getattr(o, "rest_zmap", None) is not None:
                         xi = int(round(xs))
                         yi = int(round(ys))
                         if 0 <= xi < o.rest_zmap.shape[0] and 0 <= yi < o.rest_zmap.shape[1]:
                             prior_z = o.rest_zmap[xi, yi]
                             prior_skin = getattr(o, "rest_prior_skin", 0.0)
-                            if prior_z <= z + prior_skin + o.rest_machining_threshold:
+                            prior_max_z = getattr(o, "rest_prior_max_z", 0.0)
+                            roughing_cut = prior_z < prior_max_z - o.rest_machining_threshold
+                            within_skin = prior_z <= z + prior_skin + o.rest_machining_threshold
+                            if roughing_cut and within_skin:
                                 z = 1.0  # above all layers — treated as cleared air
 
                 ################################
