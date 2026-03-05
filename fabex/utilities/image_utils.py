@@ -117,6 +117,9 @@ def numpy_to_image(a: np.ndarray, iname: str) -> bpy.types.Image:
     image = find_image(iname, width, height) or find_image(iname_59, width, height)
 
     if image is None:
+        for name in (iname, iname_59):
+            if name in bpy.data.images:
+                bpy.data.images.remove(bpy.data.images[name])
         log.info(f"Creating New Image: {iname_59}")
         result = bpy.ops.image.new(
             name=iname_59,
