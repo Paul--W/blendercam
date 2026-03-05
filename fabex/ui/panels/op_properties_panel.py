@@ -302,3 +302,18 @@ class CAM_OPERATION_PROPERTIES_Panel(CAMParentPanel, Panel):
                     box.alert = True
                     box.label(text="Exact mode: rest machining will be skipped", icon="INFO")
                     box.label(text="Disable 'Use Exact Mode' in Optimisation")
+                else:
+                    import bpy as _bpy
+
+                    prior_op = _bpy.context.scene.cam_operations.get(
+                        self.op.rest_machining_operation
+                    )
+                    if prior_op is not None and prior_op.skin <= self.op.rest_machining_threshold:
+                        box = col.box()
+                        box.alert = True
+                        box.label(text="Prior op skin ≤ threshold", icon="ERROR")
+                        box.label(text="Rest machining will skip all areas the prior")
+                        box.label(text="op reached — only unreachable zones will be cut.")
+                        box.label(
+                            text=f"Set prior op skin > {self.op.rest_machining_threshold * 1000:.2f} mm"
+                        )
