@@ -1248,19 +1248,17 @@ def load_rest_machining_zmap(o):
 
     valid = result[result != np.inf]
     inf_count = int(np.sum(result == np.inf))
+    effective_threshold = prior_op.skin + o.rest_machining_threshold
     log.info(
         f"rest_zmap: shape={result.shape}, "
         f"valid={len(valid)}, inf(uncut)={inf_count}, "
         f"prior_z range=[{valid.min():.4f}, {valid.max():.4f}], "
-        f"prior_op.skin={prior_op.skin:.4f}, "
-        f"threshold={o.rest_machining_threshold:.4f}"
+        f"prior_op.skin={prior_op.skin * 1000:.3f} mm, "
+        f"threshold={o.rest_machining_threshold * 1000:.3f} mm, "
+        f"effective_skip_threshold={effective_threshold * 1000:.3f} mm"
     )
-    if prior_op.skin <= o.rest_machining_threshold:
-        log.warning(
-            f"Rest machining: prior op '{prior_op_name}' skin ({prior_op.skin * 1000:.2f} mm) "
-            f"<= threshold ({o.rest_machining_threshold * 1000:.2f} mm). "
-            f"All areas the prior op reached will be skipped — only unreachable zones will be cut. "
-            f"Increase prior op skin or decrease threshold to cut a skin layer."
-        )
+
+    # Store prior_op skin so chunk_utils can use it in the skip comparison.
+    o.rest_prior_skin = prior_op.skin
 
     return result
