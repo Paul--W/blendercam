@@ -1183,20 +1183,25 @@ def load_rest_machining_zmap(o):
 
     if not prior_op.path_object_name:
         return None
-    exr_path = get_simulation_path() + prior_op.path_object_name + "_sim.exr"
-    if not os.path.isfile(exr_path):
+    sim_base = get_simulation_path() + prior_op.path_object_name + "_sim"
+    npy_path = sim_base + ".npy"
+    exr_path = sim_base + ".exr"
+
+    if os.path.isfile(npy_path):
+        # Fast path: load the numpy array saved alongside the EXR.
+        # Stored value = world_z - prior_minz (same as EXR, but instant to load).
+        raw = np.load(npy_path)
+    elif os.path.isfile(exr_path):
+        # Fallback for simulations run before the .npy save was added.
+        img_name = f"_rest_sim_{prior_op_name}"
+        if img_name in bpy.data.images:
+            bpy.data.images.remove(bpy.data.images[img_name])
+        prior_img = bpy.data.images.load(exr_path)
+        prior_img.name = img_name
+        raw = image_to_numpy(prior_img)
+        bpy.data.images.remove(prior_img)
+    else:
         return None
-
-    # Load EXR into a temporary Blender image, convert to numpy, then discard.
-    img_name = f"_rest_sim_{prior_op_name}"
-    if img_name in bpy.data.images:
-        bpy.data.images.remove(bpy.data.images[img_name])
-    prior_img = bpy.data.images.load(exr_path)
-    prior_img.name = img_name
-
-    # image_to_numpy returns shape (width, height) with [x, y] indexing.
-    raw = image_to_numpy(prior_img)  # stored value = world_z - prior_minz
-    bpy.data.images.remove(prior_img)
 
     # Reconstruct world Z from stored values.
     prior_world_z = raw + prior_op.min.z  # shape: (prior_resx, prior_resy)

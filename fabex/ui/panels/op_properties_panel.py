@@ -290,7 +290,7 @@ class CAM_OPERATION_PROPERTIES_Panel(CAMParentPanel, Panel):
                 panel.enabled = self.op.use_rest_machining
                 col = panel.column(align=True)
                 col.use_property_split = True
-                col.prop(self.op, "rest_machining_operation", text="Prior Sim")
+                col.prop(self.op, "rest_machining_operation", text="Prior Op")
                 col.prop(self.op, "rest_machining_threshold", text="Threshold")
                 if self.op.rest_machining_operation == "NONE":
                     box = col.box()

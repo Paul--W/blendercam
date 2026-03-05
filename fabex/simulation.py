@@ -164,6 +164,7 @@ async def do_simulation(name, operations):
 
     iname = cp + "_sim.exr"
     numpy_save(i, iname)
+    np.save(cp + "_sim.npy", i)
     i = bpy.data.images.load(iname)
 
     create_simulation_object(name, operations, i)

@@ -260,6 +260,10 @@ class CamOperationRemove(Operator):
             if os.path.isfile(exr_path):
                 os.remove(exr_path)
                 log.info(f"Deleted simulation EXR: {exr_path}")
+            npy_path = get_simulation_path() + ao.path_object_name + "_sim.npy"
+            if os.path.isfile(npy_path):
+                os.remove(npy_path)
+                log.info(f"Deleted simulation NPY: {npy_path}")
 
         if ao.name in was_hidden_dict:
             del was_hidden_dict[ao.name]

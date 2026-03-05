@@ -53,7 +53,8 @@ def get_rest_machining_operations(self, context):
     for i, op in enumerate(context.scene.cam_operations):
         if op.name == self.name:
             continue
-        if op.path_object_name and os.path.isfile(sim_path + op.path_object_name + "_sim.exr"):
+        base = sim_path + op.path_object_name + "_sim" if op.path_object_name else ""
+        if op.path_object_name and (os.path.isfile(base + ".npy") or os.path.isfile(base + ".exr")):
             items.append((op.name, op.name, f"Use simulation from '{op.name}'", i))
     if not items:
         items.append(
