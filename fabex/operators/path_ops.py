@@ -467,7 +467,14 @@ async def _calc_path(operator, context):
             return {"FINISHED", False}
         from ..utilities.simple_utils import get_simulation_path
 
-        exr_path = get_simulation_path() + prior_name + "_sim.exr"
+        if not prior_op.path_object_name:
+            operator.report(
+                {"ERROR"},
+                f"Rest Machining: '{prior_name}' has no calculated path.\n"
+                "Calculate the path and run the simulation for that operation first.",
+            )
+            return {"FINISHED", False}
+        exr_path = get_simulation_path() + prior_op.path_object_name + "_sim.exr"
         if not os.path.isfile(exr_path):
             operator.report(
                 {"ERROR"},

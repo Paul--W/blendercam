@@ -1181,7 +1181,9 @@ def load_rest_machining_zmap(o):
     if prior_op is None:
         return None
 
-    exr_path = get_simulation_path() + prior_op_name + "_sim.exr"
+    if not prior_op.path_object_name:
+        return None
+    exr_path = get_simulation_path() + prior_op.path_object_name + "_sim.exr"
     if not os.path.isfile(exr_path):
         return None
 
