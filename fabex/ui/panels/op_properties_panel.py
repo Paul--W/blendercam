@@ -202,6 +202,8 @@ class CAM_OPERATION_PROPERTIES_Panel(CAMParentPanel, Panel):
             if self.op.strategy in ["PARALLEL", "CROSS"]:
                 col.prop(self.op, "skin")
                 col.prop(self.op, "parallel_angle")
+            elif self.op.strategy == "BLOCK":
+                col.prop(self.op, "skin")
             box = col.box()
             col = box.column(align=True)
             col.label(text="Toolpath")
@@ -279,3 +281,24 @@ class CAM_OPERATION_PROPERTIES_Panel(CAMParentPanel, Panel):
                     )
                     col.prop(self.op, "use_bridge_modifiers", text="Use Modifiers")
                     col.operator("scene.cam_bridges_add", text="Autogenerate")
+
+            # Rest Machining
+            layout.use_property_split = False
+            header, panel = layout.panel("rest_machining", default_closed=True)
+            header.prop(self.op, "use_rest_machining", text="Rest Machining")
+            if panel:
+                panel.enabled = self.op.use_rest_machining
+                col = panel.column(align=True)
+                col.use_property_split = True
+                col.prop(self.op, "rest_machining_operation", text="Prior Operation")
+                col.prop(self.op, "rest_machining_threshold", text="Threshold")
+                if self.op.rest_machining_operation == "NONE":
+                    box = col.box()
+                    box.alert = True
+                    box.label(text="No simulation available", icon="ERROR")
+                    box.label(text="Run simulation on another operation first")
+                elif self.op.optimisation.use_exact:
+                    box = col.box()
+                    box.alert = True
+                    box.label(text="Exact mode: rest machining will be skipped", icon="INFO")
+                    box.label(text="Disable 'Use Exact Mode' in Optimisation")

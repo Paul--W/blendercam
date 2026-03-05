@@ -3,8 +3,10 @@
 All properties of a single CAM Operation.
 """
 
+import os
 from math import pi
 
+import bpy
 import numpy as np
 from shapely.geometry import Polygon
 
@@ -40,6 +42,24 @@ from .info_props import CAM_INFO_Properties
 from .material_props import CAM_MATERIAL_Properties
 from .movement_props import CAM_MOVEMENT_Properties
 from .optimisation_props import CAM_OPTIMISATION_Properties
+
+
+def get_rest_machining_operations(self, context):
+    """Dynamic enum: operations that have a simulation EXR on disk."""
+    from ..utilities.simple_utils import get_simulation_path
+
+    items = []
+    sim_path = get_simulation_path()
+    for i, op in enumerate(context.scene.cam_operations):
+        if op.name == self.name:
+            continue
+        if os.path.isfile(sim_path + op.name + "_sim.exr"):
+            items.append((op.name, op.name, f"Use simulation from '{op.name}'", i))
+    if not items:
+        items.append(
+            ("NONE", "No simulation available", "Run simulation on another operation first", 0)
+        )
+    return items
 
 
 class CAM_OPERATION_Properties(PropertyGroup):
@@ -867,6 +887,33 @@ class CAM_OPERATION_Properties(PropertyGroup):
         description="Curve used to limit the area of the operation",
         update=update_rest,
         # poll=lambda self, object: object.type == "CURVE",
+    )
+
+    ##################
+    # Rest Machining #
+    ##################
+
+    use_rest_machining: BoolProperty(
+        name="Rest Machining",
+        description="Skip areas already cleared by a previous operation's simulation",
+        default=False,
+        update=update_rest,
+    )
+    rest_machining_operation: EnumProperty(
+        name="Previous Operation",
+        description="Operation whose simulation Z-map defines already-machined stock",
+        items=get_rest_machining_operations,
+    )
+    rest_machining_threshold: FloatProperty(
+        name="Rest Threshold",
+        description="Skip a point only if the prior stock surface is this much above target Z. "
+        "Prevents phantom cuts at rounding boundaries",
+        default=0.0001,
+        min=0.0,
+        max=0.01,
+        precision=PRECISION,
+        unit="LENGTH",
+        update=update_rest,
     )
 
     #########

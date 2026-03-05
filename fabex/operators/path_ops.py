@@ -441,6 +441,60 @@ async def _calc_path(operator, context):
     if o.use_layers:
         o.movement.parallel_step_back = False
 
+    # --- Rest Machining: validate and load prior simulation Z-map ---
+    o.rest_zmap = None
+    if o.use_rest_machining:
+        prior_name = o.rest_machining_operation
+        if not prior_name or prior_name == "NONE":
+            operator.report(
+                {"ERROR"},
+                "Rest Machining is enabled but no previous operation is selected.\n"
+                "Choose an operation that has already been simulated.",
+            )
+            return {"FINISHED", False}
+        if prior_name == o.name:
+            operator.report(
+                {"ERROR"},
+                "Rest Machining: an operation cannot use its own simulation as stock.",
+            )
+            return {"FINISHED", False}
+        prior_op = s.cam_operations.get(prior_name)
+        if prior_op is None:
+            operator.report(
+                {"ERROR"},
+                f"Rest Machining: operation '{prior_name}' was not found in this scene.",
+            )
+            return {"FINISHED", False}
+        from ..utilities.simple_utils import get_simulation_path
+
+        exr_path = get_simulation_path() + prior_name + "_sim.exr"
+        if not os.path.isfile(exr_path):
+            operator.report(
+                {"ERROR"},
+                f"Rest Machining: no simulation file found for '{prior_name}'.\n"
+                "Run the simulation for that operation first, then recalculate this path.",
+            )
+            return {"FINISHED", False}
+        if o.optimisation.use_exact:
+            operator.report(
+                {"WARNING"},
+                "Rest Machining is only supported in image mode.\n"
+                "Disable 'Use Exact Mode' in Optimisation to enable rest machining filtering.",
+            )
+        from ..utilities.image_utils import load_rest_machining_zmap
+
+        log.info(f"[Rest Machining] Loading Z-map from '{prior_name}'")
+        zmap = load_rest_machining_zmap(o)
+        if zmap is not None:
+            o.rest_zmap = zmap
+            log.info(f"[Rest Machining] Z-map loaded: shape={zmap.shape}")
+        else:
+            operator.report(
+                {"WARNING"},
+                f"Rest Machining: Z-map for '{prior_name}' could not be loaded.\n"
+                "Path will be calculated without rest machining.",
+            )
+
     try:
         await get_path(context, o)
         log.info("Got Path Okay")
