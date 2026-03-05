@@ -340,6 +340,20 @@ async def _calc_path(operator, context):
         log.info(f"Tip Angle = {o.cutter_tip_angle:.1f} deg")
     log.info(f"Flutes = {o.cutter_flutes}")
     log.info(f"Tool Number = {o.cutter_id}")
+
+    log.info("[Rest Machining]")
+    if o.use_rest_machining:
+        prior_name = o.rest_machining_operation or "None"
+        prior_op = s.cam_operations.get(prior_name) if prior_name != "None" else None
+        prior_skin = f"{prior_op.skin * 1000:.3f} mm" if prior_op else "N/A"
+        log.info(f"Rest Machining = Enabled")
+        log.info(f"Prior Operation = {prior_name}")
+        log.info(f"Prior Op Skin = {prior_skin}")
+        log.info(f"Threshold = {o.rest_machining_threshold * 1000:.3f} mm")
+        if prior_op is not None and prior_op.skin <= o.rest_machining_threshold:
+            log.info("WARNING: Prior op skin <= threshold — only unreachable zones will be cut")
+    else:
+        log.info("Rest Machining = Disabled")
     log.info("-" * 60)
 
     # Guard: prevent using a generated CAM path object as geometry source
