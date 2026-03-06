@@ -285,14 +285,16 @@ class CAM_OPERATION_PROPERTIES_Panel(CAMParentPanel, Panel):
             # Rest Machining
             layout.use_property_split = False
             header, panel = layout.panel("rest_machining", default_closed=True)
-            # Disable checkbox when strategy is not Parallel, or no prior op paths exist
+            # Disable checkbox when strategy is not Parallel, or no earlier op has a path.
+            # Only operations that appear BEFORE this one in the list are valid roughing ops.
             is_parallel = self.op.strategy == "PARALLEL"
-            has_prior_ops = any(
-                op.name != self.op.name
-                and op.path_object_name
-                and op.path_object_name in bpy.data.objects
-                for op in context.scene.cam_operations
-            )
+            has_prior_ops = False
+            for op in context.scene.cam_operations:
+                if op.name == self.op.name:
+                    break  # reached self — stop, don't look at later ops
+                if op.path_object_name and op.path_object_name in bpy.data.objects:
+                    has_prior_ops = True
+                    break
             header_sub = header.row()
             header_sub.enabled = is_parallel and has_prior_ops
             header_sub.prop(self.op, "use_rest_machining", text="Rest Machining")

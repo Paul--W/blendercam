@@ -45,18 +45,23 @@ from .optimisation_props import CAM_OPTIMISATION_Properties
 
 
 def get_rest_machining_operations(self, context):
-    """Dynamic enum: other operations that have a calculated path object."""
+    """Dynamic enum: operations that appear BEFORE this one and have a calculated path."""
     import bpy
 
     items = []
     for i, op in enumerate(context.scene.cam_operations):
         if op.name == self.name:
-            continue
+            break  # stop at self — only earlier ops are valid roughing candidates
         if op.path_object_name and op.path_object_name in bpy.data.objects:
             items.append((op.name, op.name, f"Use roughing path from '{op.name}'", i))
     if not items:
         items.append(
-            ("NONE", "No calculated path available", "Calculate another operation first", 0)
+            (
+                "NONE",
+                "No prior calculated path",
+                "A roughing operation above this one must be calculated first",
+                0,
+            )
         )
     return items
 
