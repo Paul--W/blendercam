@@ -732,6 +732,22 @@ async def sample_chunks(o, pathSamples, layers):
     minx, miny, minz, maxx, maxy, maxz = o.min.x, o.min.y, o.min.z, o.max.x, o.max.y, o.max.z
     get_ambient(o)
 
+    # Rest machining is only supported for Parallel strategy in image mode.
+    rest_active = (
+        o.use_rest_machining
+        and o.strategy == "PARALLEL"
+        and not o.optimisation.use_exact
+        and getattr(o, "rest_zmap", None) is not None
+    )
+    rest_layer_height = getattr(o, "rest_layer_height", 0.001) if rest_active else 0.0
+    rest_final_lh = getattr(o, "rest_final_layer_height", 0.0) if rest_active else 0.0
+    if rest_active and rest_final_lh <= 0.0:
+        rest_final_lh = rest_layer_height
+
+    # Stats counters for time-savings display
+    rest_points_skipped = 0
+    rest_points_cut = 0
+
     if o.optimisation.use_exact:  # prepare collision world
         if o.optimisation.use_opencamlib:
             await oclSample(o, pathSamples)
@@ -776,6 +792,13 @@ async def sample_chunks(o, pathSamples, layers):
         ob = bpy.data.objects[o.object_name]
         zinvert = ob.location.z + maxz  # ob.bound_box[6][2]
 
+    num_layers = len(layers)
+    if rest_active:
+        log.info(
+            f"Rest Machining active: {num_layers} layer(s), "
+            f"layer_height={rest_layer_height * 1000:.3f} mm, "
+            f"final_layer_height={rest_final_lh * 1000:.3f} mm"
+        )
     log.info(f"Total Sample Points: {totlen}")
     log.info("-")
 
@@ -803,7 +826,10 @@ async def sample_chunks(o, pathSamples, layers):
         for s, in_ambient in zip(our_points, ambient_contains):
             if o.strategy != "WATERLINE" and int(100 * n / totlen) != last_percent:
                 last_percent = int(100 * n / totlen)
-                await progress_async("Sampling Paths", last_percent)
+                progress_text = "Sampling Paths"
+                if rest_active:
+                    progress_text = f"Rest Machining - Sampling Paths"
+                await progress_async(progress_text, last_percent)
 
             n += 1
             x = s[0]
@@ -846,26 +872,6 @@ async def sample_chunks(o, pathSamples, layers):
                     timing_add(samplingtime)
                     z = get_sample_image((xs, ys), o.offset_image, minz) + o.skin
 
-                    # Rest machining: skip points where the prior op cleared the
-                    # material to within (skin + threshold) of the finishing target.
-                    # Two conditions must both be true:
-                    #   1. Roughing actually cut below the stock surface (not just
-                    #      uncut stock or a shallow feature the roughing couldn't
-                    #      reach because its skin > feature depth).
-                    #   2. Roughing left stock within (skin + threshold) of the
-                    #      finishing cutter's target Z.
-                    if o.use_rest_machining and getattr(o, "rest_zmap", None) is not None:
-                        xi = int(round(xs))
-                        yi = int(round(ys))
-                        if 0 <= xi < o.rest_zmap.shape[0] and 0 <= yi < o.rest_zmap.shape[1]:
-                            prior_z = o.rest_zmap[xi, yi]
-                            prior_skin = getattr(o, "rest_prior_skin", 0.0)
-                            prior_max_z = getattr(o, "rest_prior_max_z", 0.0)
-                            roughing_cut = prior_z < prior_max_z - o.rest_machining_threshold
-                            within_skin = prior_z <= z + prior_skin + o.rest_machining_threshold
-                            if roughing_cut and within_skin:
-                                z = 1.0  # above all layers — treated as cleared air
-
                 ################################
                 # handling samples
                 ############################################
@@ -877,6 +883,35 @@ async def sample_chunks(o, pathSamples, layers):
             for i, l in enumerate(layers):
                 terminatechunk = False
                 ch = layeractivechunks[i]
+
+                # --- Rest machining skip (intermediate layers only) ---
+                # When the model surface is BELOW this layer (l[1] > newsample[2]),
+                # the cutter would be clamped to l[1] (layer bottom) — an intermediate
+                # pass.  Skip it if roughing already pre-cleared within one layer height
+                # of this depth, leaving it for the final (model-surface) pass.
+                # The final pass (l[1] <= newsample[2] <= l[0]) is never skipped so
+                # the full surface always gets finished.
+                if rest_active and l[1] > newsample[2] + 1e-8:
+                    xi = int(round((newsample[0] - minx) / pixsize + coordoffset))
+                    yi = int(round((newsample[1] - miny) / pixsize + coordoffset))
+                    if 0 <= xi < o.rest_zmap.shape[0] and 0 <= yi < o.rest_zmap.shape[1]:
+                        # remaining = roughing stock height - layer cut depth
+                        remaining = o.rest_zmap[xi, yi] - l[1]
+                        # Use final_layer_height for the last layer group, else rest_layer_height
+                        threshold = rest_final_lh if i == num_layers - 1 else rest_layer_height
+                        if remaining <= threshold:
+                            rest_points_skipped += 1
+                            terminatechunk = True
+                            if len(ch.points) > 0:
+                                as_chunk = ch.to_chunk()
+                                layerchunks[i].append(as_chunk)
+                                thisrunchunks[i].append(as_chunk)
+                                layeractivechunks[i] = CamPathChunkBuilder([])
+                            continue
+                    rest_points_cut += 1
+                elif rest_active:
+                    # Final layer for this pixel — always cut, count it
+                    rest_points_cut += 1
 
                 if l[1] <= newsample[2] <= l[0]:
                     lastlayer = None  # rather the last sample here ? has to be set to None,
@@ -967,6 +1002,18 @@ async def sample_chunks(o, pathSamples, layers):
                 timing_add(sortingtime)
 
         lastrunchunks = thisrunchunks
+
+    # Store rest machining statistics for time-savings display in path_ops.py
+    if rest_active:
+        o.rest_stats_skipped = rest_points_skipped
+        o.rest_stats_cut = rest_points_cut
+        total_rest = rest_points_skipped + rest_points_cut
+        if total_rest > 0:
+            pct = 100.0 * rest_points_skipped / total_rest
+            log.info(
+                f"[Rest Machining] Points skipped: {rest_points_skipped:,} ({pct:.1f}%), "
+                f"cut: {rest_points_cut:,} ({100 - pct:.1f}%)"
+            )
 
     progress("~ Checking Relations Between Paths ~")
     timing_start(sortingtime)
@@ -1244,6 +1291,40 @@ def chunks_to_mesh(chunks, o):
     e = 0.0001
     lifted = True
 
+    # Terrain-following rapid: for rest machining parallel ops, scan the Z-map
+    # along the gap between two consecutive chunks and use max(terrain+clearance,
+    # free_height) as the lift Z.  This is always safe and reduces lift height
+    # when the user has set a low free_height.
+    rest_rapid_enabled = (
+        getattr(o, "use_rest_machining", False)
+        and o.strategy == "PARALLEL"
+        and three_axis
+        and getattr(o, "rest_zmap", None) is not None
+    )
+    if rest_rapid_enabled:
+        _rest_pixsize = o.optimisation.pixsize
+        _rest_coordoff = o.borderwidth + _rest_pixsize / 2.0
+        _rest_minx = o.min.x
+        _rest_miny = o.min.y
+        _rest_clearance = getattr(o, "rest_terrain_clearance", 0.003)
+        _rest_zmap = o.rest_zmap
+
+    def _terrain_lift_z(ax, ay, bx, by):
+        """Scan Z-map along line A→B, return max(terrain+clearance, free_height)."""
+        steps = max(2, int(((bx - ax) ** 2 + (by - ay) ** 2) ** 0.5 / _rest_pixsize))
+        peak = free_height
+        for k in range(steps + 1):
+            t = k / steps
+            wx = ax + t * (bx - ax)
+            wy = ay + t * (by - ay)
+            xi = int(round((wx - _rest_minx) / _rest_pixsize + _rest_coordoff))
+            yi = int(round((wy - _rest_miny) / _rest_pixsize + _rest_coordoff))
+            if 0 <= xi < _rest_zmap.shape[0] and 0 <= yi < _rest_zmap.shape[1]:
+                cand = _rest_zmap[xi, yi] + _rest_clearance
+                if cand > peak:
+                    peak = cand
+        return peak
+
     for chunk_index in range(0, len(chunks)):
         chunk = chunks[chunk_index]
         # TODO: there is a case where parallel+layers+zigzag ramps send empty chunks here...
@@ -1294,7 +1375,16 @@ def chunks_to_mesh(chunks, o):
 
             if lift:
                 if three_axis or indexed_five_axis or indexed_four_axis:
-                    vertex = (chunk.get_point(-1)[0], chunk.get_point(-1)[1], free_height)
+                    if rest_rapid_enabled and chunk_index < len(chunks) - 1:
+                        # Terrain-following flat-top rapid: find max terrain along
+                        # the gap and lift only as high as needed (min = free_height).
+                        next_chunk = chunks[chunk_index + 1]
+                        lx, ly = chunk.get_point(-1)[0], chunk.get_point(-1)[1]
+                        nx, ny = next_chunk.get_point(0)[0], next_chunk.get_point(0)[1]
+                        lift_z = _terrain_lift_z(lx, ly, nx, ny)
+                    else:
+                        lift_z = free_height
+                    vertex = (chunk.get_point(-1)[0], chunk.get_point(-1)[1], lift_z)
                 else:
                     vertex = chunk.startpoints[-1]
                     vertices_rotations.append(chunk.rotations[-1])

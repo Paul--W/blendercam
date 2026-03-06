@@ -1154,23 +1154,27 @@ def image_to_chunks(o, image, with_border=False):
         return []
 
 
-def load_rest_machining_zmap(o):
-    """Load and resample a prior operation's simulation Z-map for rest machining.
+async def seed_zmap_from_roughing_path(o):
+    """Seed a rest-machining Z-map from the roughing operation's path object.
 
-    The simulation EXR stores pixel values as (world_z - prior_minz), with the
-    border stripped. This function loads it, converts to world Z, and resamples
-    it to match the current operation's offset_image pixel grid.
+    Traces every vertex of the roughing path mesh through the roughing cutter
+    footprint to produce a truthful picture of what the roughing cutter left
+    behind.  No simulation file required.
+
+    The resulting Z-map is in the current (finishing) operation's pixel space.
+    Each pixel holds the highest world-Z that the roughing cutter reached at
+    that location.  Pixels outside the roughing path area are left at
+    prior_op.max.z (the stock surface — the roughing cutter never touched
+    there).
 
     Args:
-        o: Current CAM operation. Must have use_rest_machining=True and
-           rest_machining_operation set to a valid operation name.
+        o: Current (finishing) CAM operation.
 
     Returns:
-        np.ndarray of shape (curr_resx, curr_resy) with world-Z of the prior
-        stock surface at each pixel, or np.inf where outside the prior bounds.
-        Returns None if the EXR cannot be loaded.
+        np.ndarray of shape (resx, resy) in world-Z, or None on failure.
     """
-    from .simple_utils import get_simulation_path
+    from .async_utils import progress_async
+    from .operation_utils import get_cutter_array
 
     scene = bpy.context.scene
     prior_op_name = o.rest_machining_operation
@@ -1181,38 +1185,13 @@ def load_rest_machining_zmap(o):
     if prior_op is None:
         return None
 
-    if not prior_op.path_object_name:
-        return None
-    sim_base = get_simulation_path() + prior_op.path_object_name + "_sim"
-    npy_path = sim_base + ".npy"
-    exr_path = sim_base + ".exr"
-
-    if os.path.isfile(npy_path):
-        # Fast path: load the numpy array saved alongside the EXR.
-        # Stored value = world_z - prior_minz (same as EXR, but instant to load).
-        raw = np.load(npy_path)
-    elif os.path.isfile(exr_path):
-        # Fallback for simulations run before the .npy save was added.
-        img_name = f"_rest_sim_{prior_op_name}"
-        if img_name in bpy.data.images:
-            bpy.data.images.remove(bpy.data.images[img_name])
-        prior_img = bpy.data.images.load(exr_path)
-        prior_img.name = img_name
-        raw = image_to_numpy(prior_img)
-        bpy.data.images.remove(prior_img)
-    else:
+    if not prior_op.path_object_name or prior_op.path_object_name not in bpy.data.objects:
+        log.warning(f"seed_zmap: roughing path object '{prior_op.path_object_name}' not found")
         return None
 
-    # Reconstruct world Z from stored values.
-    prior_world_z = raw + prior_op.min.z  # shape: (prior_resx, prior_resy)
-    prior_resx, prior_resy = prior_world_z.shape
+    await progress_async("Rest Machining: Building Z-map from roughing path", 0)
 
-    # Prior pixel spacing is simulation_detail; pixel [0,0] = (prior_minx, prior_miny).
-    prior_simdetail = prior_op.optimisation.simulation_detail
-    prior_minx = prior_op.min.x
-    prior_miny = prior_op.min.y
-
-    # Build output array sized to match current op's offset_image.
+    # --- Pixel-space parameters for the finishing op ---
     curr_pixsize = o.optimisation.pixsize
     curr_borderwidth = o.borderwidth
     curr_minx = o.min.x
@@ -1221,51 +1200,52 @@ def load_rest_machining_zmap(o):
     curr_maxy = o.max.y
     curr_resx = ceil((curr_maxx - curr_minx) / curr_pixsize) + 2 * curr_borderwidth
     curr_resy = ceil((curr_maxy - curr_miny) / curr_pixsize) + 2 * curr_borderwidth
-
-    # np.inf means "prior op never cut here" — current op must cut everything.
-    result = np.full((curr_resx, curr_resy), fill_value=np.inf, dtype=float)
-
-    # Map current pixel indices to world coords, then to prior pixel coords.
     coordoffset = curr_borderwidth + curr_pixsize / 2.0
-    curr_px = np.arange(curr_resx, dtype=float)
-    curr_py = np.arange(curr_resy, dtype=float)
-    world_x = (curr_px - coordoffset) * curr_pixsize + curr_minx
-    world_y = (curr_py - coordoffset) * curr_pixsize + curr_miny
 
-    prior_px_f = (world_x - prior_minx) / prior_simdetail
-    prior_py_f = (world_y - prior_miny) / prior_simdetail
+    # Stock surface Z — everywhere the roughing cutter never reached.
+    stock_z = prior_op.max.z
 
-    # Find which current pixels fall inside the prior op's bounds.
-    in_x = (prior_px_f >= 0) & (prior_px_f <= prior_resx - 1)
-    in_y = (prior_py_f >= 0) & (prior_py_f <= prior_resy - 1)
-    ix_in = np.where(in_x)[0]
-    iy_in = np.where(in_y)[0]
+    # Initialise: entire surface at stock height (nothing cut yet).
+    zmap = np.full((curr_resx, curr_resy), fill_value=stock_z, dtype=float)
 
-    if len(ix_in) > 0 and len(iy_in) > 0:
-        p_ix = np.clip(np.round(prior_px_f[ix_in]).astype(int), 0, prior_resx - 1)
-        p_iy = np.clip(np.round(prior_py_f[iy_in]).astype(int), 0, prior_resy - 1)
-        result[np.ix_(ix_in, iy_in)] = prior_world_z[np.ix_(p_ix, p_iy)]
+    # --- Roughing cutter footprint in the finishing op's pixel space ---
+    # get_cutter_array uses the operation's cutter_type / cutter_diameter.
+    roughing_cutter = get_cutter_array(prior_op, curr_pixsize)
 
-    prior_max_z = prior_op.max.z
-    effective_threshold = prior_op.skin + o.rest_machining_threshold
-    valid = result[result != np.inf]
-    inf_count = int(np.sum(result == np.inf))
-    # Count pixels where roughing actually cut below stock surface.
-    cut_mask = valid < prior_max_z - o.rest_machining_threshold
-    cut_count = int(np.sum(cut_mask))
-    at_stock = len(valid) - cut_count
+    # --- Trace roughing path vertices ---
+    path_obj = bpy.data.objects[prior_op.path_object_name]
+    verts = path_obj.data.vertices
+    num_verts = len(verts)
+
     log.info(
-        f"rest_zmap: shape={result.shape}, "
-        f"valid={len(valid)}, inf(unreachable)={inf_count}, "
-        f"at_stock={at_stock}, cut={cut_count}, "
-        f"prior_z range=[{valid.min():.4f}, {valid.max():.4f}], "
-        f"prior_op.skin={prior_op.skin * 1000:.3f} mm, "
-        f"threshold={o.rest_machining_threshold * 1000:.3f} mm, "
-        f"effective_skip_threshold={effective_threshold * 1000:.3f} mm"
+        f"seed_zmap: tracing {num_verts:,} roughing vertices "
+        f"with {prior_op.cutter_type} Ø{prior_op.cutter_diameter * 1000:.2f} mm cutter, "
+        f"stock_z={stock_z:.4f}, zmap shape={zmap.shape}"
     )
 
-    # Store prior_op skin and stock-surface Z so chunk_utils can use them.
-    o.rest_prior_skin = prior_op.skin
-    o.rest_prior_max_z = prior_max_z
+    from ..simulation import sim_cutter_spot
 
-    return result
+    report_step = max(1, num_verts // 100)
+    for j, vert in enumerate(verts):
+        co = vert.co  # world coords (path object is at origin)
+        xs = int(round((co.x - curr_minx) / curr_pixsize + coordoffset))
+        ys = int(round((co.y - curr_miny) / curr_pixsize + coordoffset))
+        sim_cutter_spot(xs, ys, co.z, roughing_cutter, zmap)
+
+        if j % report_step == 0:
+            pct = int(j / num_verts * 100)
+            await progress_async(f"Rest Machining: Building Z-map {pct}%", pct)
+
+    await progress_async("Rest Machining: Z-map ready", 100)
+
+    # Log statistics
+    cut_mask = zmap < stock_z - curr_pixsize
+    cut_count = int(np.sum(cut_mask))
+    at_stock = zmap.size - cut_count
+    log.info(
+        f"seed_zmap: pixels at stock={at_stock:,}, cut={cut_count:,} "
+        f"({100 * cut_count / zmap.size:.1f}%), "
+        f"z range=[{zmap.min():.4f}, {zmap.max():.4f}]"
+    )
+
+    return zmap

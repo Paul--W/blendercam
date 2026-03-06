@@ -896,22 +896,45 @@ class CAM_OPERATION_Properties(PropertyGroup):
 
     use_rest_machining: BoolProperty(
         name="Rest Machining",
-        description="Skip areas already cleared by a previous operation's simulation",
+        description="Skip areas already cleared by the roughing operation. "
+        "Only supported for Parallel strategy in image mode",
         default=False,
         update=update_rest,
     )
     rest_machining_operation: EnumProperty(
         name="Previous Operation",
-        description="Operation whose simulation Z-map defines already-machined stock",
+        description="Roughing operation whose path defines the already-machined stock",
         items=get_rest_machining_operations,
     )
-    rest_machining_threshold: FloatProperty(
-        name="Rest Threshold",
-        description="Skip a point only if the prior stock surface is this much above target Z. "
-        "Prevents phantom cuts at rounding boundaries",
-        default=0.0001,
+    rest_layer_height: FloatProperty(
+        name="Layer Height",
+        description="Depth per finishing pass. Areas where roughing left less than this "
+        "amount of material are saved for the final pass. "
+        "Auto-calculated from cutter when cutter changes",
+        default=0.001,
+        min=0.000001,
+        max=0.1,
+        precision=PRECISION,
+        unit="LENGTH",
+        update=update_rest,
+    )
+    rest_final_layer_height: FloatProperty(
+        name="Final Layer Height",
+        description="Depth of the very last finishing pass (0 = same as Layer Height). "
+        "Use a smaller value for a lighter final surface pass",
+        default=0.0,
         min=0.0,
-        max=0.01,
+        max=0.1,
+        precision=PRECISION,
+        unit="LENGTH",
+        update=update_rest,
+    )
+    rest_terrain_clearance: FloatProperty(
+        name="Terrain Clearance",
+        description="How high rapids fly above the stock surface between cut segments",
+        default=0.003,
+        min=0.0001,
+        max=0.05,
         precision=PRECISION,
         unit="LENGTH",
         update=update_rest,

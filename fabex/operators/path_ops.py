@@ -345,13 +345,20 @@ async def _calc_path(operator, context):
     if o.use_rest_machining:
         prior_name = o.rest_machining_operation or "None"
         prior_op = s.cam_operations.get(prior_name) if prior_name != "None" else None
-        prior_skin = f"{prior_op.skin * 1000:.3f} mm" if prior_op else "N/A"
-        log.info(f"Rest Machining = Enabled")
+        final_lh = (
+            o.rest_final_layer_height if o.rest_final_layer_height > 0 else o.rest_layer_height
+        )
+        log.info(f"Rest Machining = Enabled (Parallel strategy only)")
         log.info(f"Prior Operation = {prior_name}")
-        log.info(f"Prior Op Skin = {prior_skin}")
-        log.info(f"Threshold = {o.rest_machining_threshold * 1000:.3f} mm")
-        if prior_op is not None and prior_op.skin <= o.rest_machining_threshold:
-            log.info("WARNING: Prior op skin <= threshold — only unreachable zones will be cut")
+        log.info(f"Layer Height = {o.rest_layer_height * 1000:.3f} mm")
+        log.info(f"Final Layer Height = {final_lh * 1000:.3f} mm")
+        log.info(f"Terrain Clearance = {o.rest_terrain_clearance * 1000:.3f} mm")
+        if prior_op is not None:
+            log.info(
+                f"Prior Op Cutter = {prior_op.cutter_type} "
+                f"Ø{prior_op.cutter_diameter * 1000:.2f} mm, "
+                f"skin={prior_op.skin * 1000:.3f} mm"
+            )
     else:
         log.info("Rest Machining = Disabled")
     log.info("-" * 60)
@@ -455,70 +462,102 @@ async def _calc_path(operator, context):
     if o.use_layers:
         o.movement.parallel_step_back = False
 
-    # --- Rest Machining: validate and load prior simulation Z-map ---
+    # --- Rest Machining: validate and seed Z-map from roughing path object ---
     o.rest_zmap = None
+    o.rest_stats_skipped = 0
+    o.rest_stats_cut = 0
     if o.use_rest_machining:
         prior_name = o.rest_machining_operation
         if not prior_name or prior_name == "NONE":
             operator.report(
                 {"ERROR"},
-                "Rest Machining is enabled but no previous operation is selected.\n"
-                "Choose an operation that has already been simulated.",
+                "Rest Machining is enabled but no previous operation is selected.",
             )
             return {"FINISHED", False}
         if prior_name == o.name:
             operator.report(
                 {"ERROR"},
-                "Rest Machining: an operation cannot use its own simulation as stock.",
+                "Rest Machining: an operation cannot use its own path as roughing stock.",
+            )
+            return {"FINISHED", False}
+        if o.strategy != "PARALLEL":
+            operator.report(
+                {"ERROR"},
+                "Rest Machining is only supported for the Parallel strategy.",
+            )
+            return {"FINISHED", False}
+        if o.optimisation.use_exact:
+            operator.report(
+                {"ERROR"},
+                "Rest Machining requires image mode. Disable 'Use Exact Mode'.",
             )
             return {"FINISHED", False}
         prior_op = s.cam_operations.get(prior_name)
         if prior_op is None:
             operator.report(
                 {"ERROR"},
-                f"Rest Machining: operation '{prior_name}' was not found in this scene.",
+                f"Rest Machining: operation '{prior_name}' not found in this scene.",
             )
             return {"FINISHED", False}
-        from ..utilities.simple_utils import get_simulation_path
-
-        if not prior_op.path_object_name:
+        if not prior_op.path_object_name or prior_op.path_object_name not in bpy.data.objects:
             operator.report(
                 {"ERROR"},
-                f"Rest Machining: '{prior_name}' has no calculated path.\n"
-                "Calculate the path and run the simulation for that operation first.",
+                f"Rest Machining: '{prior_name}' has no calculated path. "
+                "Calculate that operation first.",
             )
             return {"FINISHED", False}
-        exr_path = get_simulation_path() + prior_op.path_object_name + "_sim.exr"
-        if not os.path.isfile(exr_path):
-            operator.report(
-                {"ERROR"},
-                f"Rest Machining: no simulation file found for '{prior_name}'.\n"
-                "Run the simulation for that operation first, then recalculate this path.",
-            )
-            return {"FINISHED", False}
-        if o.optimisation.use_exact:
-            operator.report(
-                {"WARNING"},
-                "Rest Machining is only supported in image mode.\n"
-                "Disable 'Use Exact Mode' in Optimisation to enable rest machining filtering.",
-            )
-        from ..utilities.image_utils import load_rest_machining_zmap
 
-        log.info(f"[Rest Machining] Loading Z-map from '{prior_name}'")
-        zmap = load_rest_machining_zmap(o)
+        from ..utilities.image_utils import seed_zmap_from_roughing_path
+
+        log.info(f"[Rest Machining] Seeding Z-map from roughing path '{prior_name}'")
+        zmap = await seed_zmap_from_roughing_path(o)
         if zmap is not None:
             o.rest_zmap = zmap
-            log.info(f"[Rest Machining] Z-map loaded: shape={zmap.shape}")
+            log.info(f"[Rest Machining] Z-map ready: shape={zmap.shape}")
         else:
             operator.report(
                 {"WARNING"},
-                f"Rest Machining: Z-map for '{prior_name}' could not be loaded.\n"
+                f"Rest Machining: could not build Z-map from '{prior_name}'. "
                 "Path will be calculated without rest machining.",
             )
 
     try:
         await get_path(context, o)
         log.info("Got Path Okay")
+
+        # Rest machining time savings summary
+        if o.use_rest_machining and o.strategy == "PARALLEL":
+            skipped = getattr(o, "rest_stats_skipped", 0)
+            cut = getattr(o, "rest_stats_cut", 0)
+            total = skipped + cut
+            if total > 0:
+                pct_skip = 100.0 * skipped / total
+                # Estimate distance: points × stepover (distance_between_paths)
+                step = o.distance_between_paths
+                skip_dist_m = skipped * step
+                cut_dist_m = cut * step
+                f_cut = max(o.feedrate, 0.0001)
+                machine = bpy.context.scene.cam_machine
+                f_rapid = max(getattr(machine, "feedrate_rapid", f_cut * 5), f_cut)
+                t_cut_everywhere = (skipped + cut) * step / f_cut / 60.0
+                t_rest = cut * step / f_cut / 60.0 + skipped * step / f_rapid / 60.0
+                t_saved = t_cut_everywhere - t_rest
+                log.info("-" * 60)
+                log.info("[Rest Machining Results]")
+                log.info(
+                    f"Points skipped : {skipped:>10,}  ({pct_skip:.1f}%)"
+                    f"  ~{skip_dist_m:.1f} m at rapid"
+                )
+                log.info(
+                    f"Points cut     : {cut:>10,}  ({100 - pct_skip:.1f}%)"
+                    f"  ~{cut_dist_m:.1f} m at feedrate"
+                )
+                log.info(
+                    f"Est. time saved: {t_saved:.1f} min "
+                    f"(vs {t_cut_everywhere:.1f} min cut-everywhere = "
+                    f"{100 * t_saved / t_cut_everywhere:.0f}% reduction)"
+                )
+                log.info("-" * 60)
 
         # Restore source mesh as active object so that adding a new operation
         # auto-picks the source mesh rather than the generated CAM path

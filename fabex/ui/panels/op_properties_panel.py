@@ -291,16 +291,24 @@ class CAM_OPERATION_PROPERTIES_Panel(CAMParentPanel, Panel):
                 col = panel.column(align=True)
                 col.use_property_split = True
                 col.prop(self.op, "rest_machining_operation", text="Prior Op")
-                col.prop(self.op, "rest_machining_threshold", text="Threshold")
+                col.prop(self.op, "rest_layer_height", text="Layer Height")
+                final_lh = self.op.rest_final_layer_height
+                col.prop(
+                    self.op,
+                    "rest_final_layer_height",
+                    text=f"Final Layer Height {'(= Layer Height)' if final_lh <= 0 else ''}",
+                )
+                col.prop(self.op, "rest_terrain_clearance", text="Terrain Clearance")
                 if self.op.rest_machining_operation == "NONE":
                     box = col.box()
                     box.alert = True
-                    box.label(text="No simulation available", icon="ERROR")
-                    box.label(text="Run simulation on another operation first")
+                    box.label(text="Select a roughing operation above", icon="ERROR")
+                elif self.op.strategy != "PARALLEL":
+                    box = col.box()
+                    box.alert = True
+                    box.label(text="Only supported for Parallel strategy", icon="INFO")
                 elif self.op.optimisation.use_exact:
                     box = col.box()
                     box.alert = True
-                    box.label(text="Exact mode: rest machining will be skipped", icon="INFO")
+                    box.label(text="Exact mode: rest machining disabled", icon="INFO")
                     box.label(text="Disable 'Use Exact Mode' in Optimisation")
-                else:
-                    pass  # configuration is valid
