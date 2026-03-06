@@ -285,7 +285,8 @@ class CAM_OPERATION_PROPERTIES_Panel(CAMParentPanel, Panel):
             # Rest Machining
             layout.use_property_split = False
             header, panel = layout.panel("rest_machining", default_closed=True)
-            # Disable checkbox when no other operations have a calculated path
+            # Disable checkbox when strategy is not Parallel, or no prior op paths exist
+            is_parallel = self.op.strategy == "PARALLEL"
             has_prior_ops = any(
                 op.name != self.op.name
                 and op.path_object_name
@@ -293,7 +294,7 @@ class CAM_OPERATION_PROPERTIES_Panel(CAMParentPanel, Panel):
                 for op in context.scene.cam_operations
             )
             header_sub = header.row()
-            header_sub.enabled = has_prior_ops
+            header_sub.enabled = is_parallel and has_prior_ops
             header_sub.prop(self.op, "use_rest_machining", text="Rest Machining")
             if panel:
                 panel.enabled = self.op.use_rest_machining

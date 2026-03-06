@@ -66,6 +66,9 @@ def update_strategy(o, context):
         add_orientation_object(o)
     else:
         remove_orientation_object(o)
+    # Rest machining is only valid for Parallel — clear the flag if strategy changes away
+    if o.strategy != "PARALLEL" and o.use_rest_machining:
+        o.use_rest_machining = False
     update_exact(o, context)
 
 
