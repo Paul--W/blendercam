@@ -285,7 +285,16 @@ class CAM_OPERATION_PROPERTIES_Panel(CAMParentPanel, Panel):
             # Rest Machining
             layout.use_property_split = False
             header, panel = layout.panel("rest_machining", default_closed=True)
-            header.prop(self.op, "use_rest_machining", text="Rest Machining")
+            # Disable checkbox when no other operations have a calculated path
+            has_prior_ops = any(
+                op.name != self.op.name
+                and op.path_object_name
+                and op.path_object_name in bpy.data.objects
+                for op in context.scene.cam_operations
+            )
+            header_sub = header.row()
+            header_sub.enabled = has_prior_ops
+            header_sub.prop(self.op, "use_rest_machining", text="Rest Machining")
             if panel:
                 panel.enabled = self.op.use_rest_machining
                 col = panel.column(align=True)
@@ -299,16 +308,17 @@ class CAM_OPERATION_PROPERTIES_Panel(CAMParentPanel, Panel):
                     text=f"Final Layer Height {'(= Layer Height)' if final_lh <= 0 else ''}",
                 )
                 col.prop(self.op, "rest_terrain_clearance", text="Terrain Clearance")
-                if self.op.rest_machining_operation == "NONE":
-                    box = col.box()
-                    box.alert = True
-                    box.label(text="Select a roughing operation above", icon="ERROR")
-                elif self.op.strategy != "PARALLEL":
-                    box = col.box()
-                    box.alert = True
-                    box.label(text="Only supported for Parallel strategy", icon="INFO")
-                elif self.op.optimisation.use_exact:
-                    box = col.box()
-                    box.alert = True
-                    box.label(text="Exact mode: rest machining disabled", icon="INFO")
-                    box.label(text="Disable 'Use Exact Mode' in Optimisation")
+                if self.op.use_rest_machining:
+                    if self.op.rest_machining_operation == "NONE":
+                        box = col.box()
+                        box.alert = True
+                        box.label(text="Select a roughing operation above", icon="ERROR")
+                    elif self.op.strategy != "PARALLEL":
+                        box = col.box()
+                        box.alert = True
+                        box.label(text="Only supported for Parallel strategy", icon="INFO")
+                    elif self.op.optimisation.use_exact:
+                        box = col.box()
+                        box.alert = True
+                        box.label(text="Exact mode: rest machining disabled", icon="INFO")
+                        box.label(text="Disable 'Use Exact Mode' in Optimisation")

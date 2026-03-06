@@ -45,20 +45,18 @@ from .optimisation_props import CAM_OPTIMISATION_Properties
 
 
 def get_rest_machining_operations(self, context):
-    """Dynamic enum: operations that have a simulation EXR on disk."""
-    from ..utilities.simple_utils import get_simulation_path
+    """Dynamic enum: other operations that have a calculated path object."""
+    import bpy
 
     items = []
-    sim_path = get_simulation_path()
     for i, op in enumerate(context.scene.cam_operations):
         if op.name == self.name:
             continue
-        base = sim_path + op.path_object_name + "_sim" if op.path_object_name else ""
-        if op.path_object_name and (os.path.isfile(base + ".npy") or os.path.isfile(base + ".exr")):
-            items.append((op.name, op.name, f"Use simulation from '{op.name}'", i))
+        if op.path_object_name and op.path_object_name in bpy.data.objects:
+            items.append((op.name, op.name, f"Use roughing path from '{op.name}'", i))
     if not items:
         items.append(
-            ("NONE", "No simulation available", "Run simulation on another operation first", 0)
+            ("NONE", "No calculated path available", "Calculate another operation first", 0)
         )
     return items
 
