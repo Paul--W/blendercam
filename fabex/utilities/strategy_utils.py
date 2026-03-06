@@ -4,9 +4,23 @@ Main functionality of Fabex.
 The functions here are called with operators defined in 'ops.py'
 """
 
+import json
 from math import pi
+from pathlib import Path
 
 import numpy as np
+
+_OCL_PREFS_FILE = Path(__file__).parent.parent / "_user_ocl_prefs.json"
+
+
+def _save_ocl_prefs(use_exact, use_opencamlib):
+    try:
+        _OCL_PREFS_FILE.write_text(
+            json.dumps({"use_exact": use_exact, "use_opencamlib": use_opencamlib})
+        )
+    except Exception:
+        pass
+
 
 import bpy
 from mathutils import (
@@ -249,6 +263,7 @@ def update_exact_mode(self, context):
     # from . import updateExact
     active_op = bpy.context.scene.cam_operations[bpy.context.scene.cam_active_operation]
     update_exact(active_op, bpy.context)
+    _save_ocl_prefs(active_op.optimisation.use_exact, active_op.optimisation.use_opencamlib)
 
 
 def update_opencamlib(self, context):
@@ -268,6 +283,7 @@ def update_opencamlib(self, context):
     # from . import updateOpencamlib
     active_op = bpy.context.scene.cam_operations[bpy.context.scene.cam_active_operation]
     update_opencamlib_1(active_op, bpy.context)
+    _save_ocl_prefs(active_op.optimisation.use_exact, active_op.optimisation.use_opencamlib)
 
 
 # add pocket op for medial axis and profile cut inside to clean unremoved material
