@@ -732,22 +732,6 @@ async def sample_chunks(o, pathSamples, layers):
     minx, miny, minz, maxx, maxy, maxz = o.min.x, o.min.y, o.min.z, o.max.x, o.max.y, o.max.z
     get_ambient(o)
 
-    # Rest machining is only supported for Parallel strategy in image mode.
-    rest_active = (
-        o.use_rest_machining
-        and o.strategy == "PARALLEL"
-        and not o.optimisation.use_exact
-        and getattr(o, "rest_zmap", None) is not None
-    )
-    rest_layer_height = getattr(o, "rest_layer_height", 0.001) if rest_active else 0.0
-    rest_final_lh = getattr(o, "rest_final_layer_height", 0.0) if rest_active else 0.0
-    if rest_active and rest_final_lh <= 0.0:
-        rest_final_lh = rest_layer_height
-
-    # Stats counters for time-savings display
-    rest_points_skipped = 0
-    rest_points_cut = 0
-
     if o.optimisation.use_exact:  # prepare collision world
         if o.optimisation.use_opencamlib:
             await oclSample(o, pathSamples)
@@ -793,12 +777,6 @@ async def sample_chunks(o, pathSamples, layers):
         zinvert = ob.location.z + maxz  # ob.bound_box[6][2]
 
     num_layers = len(layers)
-    if rest_active:
-        log.info(
-            f"Rest Machining active: {num_layers} layer(s), "
-            f"layer_height={rest_layer_height * 1000:.3f} mm, "
-            f"final_layer_height={rest_final_lh * 1000:.3f} mm"
-        )
     log.info(f"Total Sample Points: {totlen}")
     log.info("-")
 
@@ -827,8 +805,6 @@ async def sample_chunks(o, pathSamples, layers):
             if o.strategy != "WATERLINE" and int(100 * n / totlen) != last_percent:
                 last_percent = int(100 * n / totlen)
                 progress_text = "Sampling Paths"
-                if rest_active:
-                    progress_text = f"Rest Machining - Sampling Paths"
                 await progress_async(progress_text, last_percent)
 
             n += 1
@@ -883,37 +859,6 @@ async def sample_chunks(o, pathSamples, layers):
             for i, l in enumerate(layers):
                 terminatechunk = False
                 ch = layeractivechunks[i]
-
-                # --- Rest machining skip (intermediate layers only) ---
-                # When the model surface is BELOW this layer (l[1] > newsample[2]),
-                # the cutter would be clamped to l[1] (layer bottom) — an intermediate
-                # pass.  Skip it if roughing already pre-cleared within one layer height
-                # of this depth, leaving it for the final (model-surface) pass.
-                # The final pass (l[1] <= newsample[2] <= l[0]) is never skipped so
-                # the full surface always gets finished.
-                if rest_active and l[1] > newsample[2] + 1e-8:
-                    xi = int(round((newsample[0] - minx) / pixsize + coordoffset))
-                    yi = int(round((newsample[1] - miny) / pixsize + coordoffset))
-                    if 0 <= xi < o.rest_zmap.shape[0] and 0 <= yi < o.rest_zmap.shape[1]:
-                        # remaining = roughing stock height - layer cut depth
-                        remaining = o.rest_zmap[xi, yi] - l[1]
-                        # Use final_layer_height for the last layer group, else rest_layer_height
-                        threshold = rest_final_lh if i == num_layers - 1 else rest_layer_height
-                        if remaining <= threshold:
-                            rest_points_skipped += 1
-                            terminatechunk = True
-                            if len(ch.points) > 0:
-                                as_chunk = ch.to_chunk()
-                                as_chunk.layer_index = i
-                                as_chunk.num_layers = num_layers
-                                layerchunks[i].append(as_chunk)
-                                thisrunchunks[i].append(as_chunk)
-                                layeractivechunks[i] = CamPathChunkBuilder([])
-                            continue
-                    rest_points_cut += 1
-                elif rest_active:
-                    # Final layer for this pixel — always cut, count it
-                    rest_points_cut += 1
 
                 if l[1] <= newsample[2] <= l[0]:
                     lastlayer = None  # rather the last sample here ? has to be set to None,
@@ -1008,18 +953,6 @@ async def sample_chunks(o, pathSamples, layers):
                 timing_add(sortingtime)
 
         lastrunchunks = thisrunchunks
-
-    # Store rest machining statistics for time-savings display in path_ops.py
-    if rest_active:
-        o.rest_stats_skipped = rest_points_skipped
-        o.rest_stats_cut = rest_points_cut
-        total_rest = rest_points_skipped + rest_points_cut
-        if total_rest > 0:
-            pct = 100.0 * rest_points_skipped / total_rest
-            log.info(
-                f"[Rest Machining] Points skipped: {rest_points_skipped:,} ({pct:.1f}%), "
-                f"cut: {rest_points_cut:,} ({100 - pct:.1f}%)"
-            )
 
     progress("~ Checking Relations Between Paths ~")
     timing_start(sortingtime)
@@ -1226,167 +1159,6 @@ async def sort_chunks(chunks, o, last_pos=None):
     return sortedchunks
 
 
-def _build_layer_vis_objects(chunks, path_name, scene, rapid_by_layer=None):
-    """Create per-layer visualization mesh objects alongside the main cam path.
-
-    One object per unique layer_index is created and placed in a 'Layers'
-    sub-collection inside 'Paths'.  Each object gets ob.color AND
-    mat.diffuse_color so the layer color is visible in BOTH Solid mode and
-    Material Preview — no vertex-colour interpolation needed.
-    """
-    _FINAL_LAYER_COLOR = (0.05, 0.8, 0.1, 1.0)
-    _LAYER_PALETTE = [
-        (0.6, 0.0, 0.9, 1.0),  # purple
-        (0.8, 0.7, 0.0, 1.0),  # dark yellow
-        (0.1, 0.35, 0.95, 1.0),  # blue
-        (0.0, 0.75, 0.75, 1.0),  # cyan
-        (0.9, 0.4, 0.0, 1.0),  # orange
-        (0.75, 0.0, 0.55, 1.0),  # magenta
-    ]
-
-    num_layers = max(
-        (getattr(ch, "num_layers", 1) for ch in chunks if ch.count() > 0),
-        default=1,
-    )
-
-    def _layer_color(idx):
-        if idx < 0 or num_layers <= 1 or idx == num_layers - 1:
-            return _FINAL_LAYER_COLOR
-        return _LAYER_PALETTE[idx % len(_LAYER_PALETTE)]
-
-    # Ensure 'Layers' sub-collection exists inside 'Paths'
-    collections = bpy.data.collections
-    if "Paths" not in collections:
-        add_collections()
-    layers_col_name = "Layers"
-    if layers_col_name not in collections:
-        layers_col = bpy.data.collections.new(layers_col_name)
-        collections["Paths"].children.link(layers_col)
-    else:
-        layers_col = collections[layers_col_name]
-
-    # Clean up old layer objects for this operation
-    prefix = f"{path_name}_L"
-    for old_obj in [obj for obj in list(layers_col.objects) if obj.name.startswith(prefix)]:
-        old_mesh = old_obj.data
-        layers_col.objects.unlink(old_obj)
-        bpy.data.objects.remove(old_obj)
-        if old_mesh and old_mesh.users == 0:
-            bpy.data.meshes.remove(old_mesh)
-
-    # Group chunks by layer_index
-    layer_chunks: dict = {}
-    for ch in chunks:
-        if ch.count() > 0:
-            idx = getattr(ch, "layer_index", -1)
-            layer_chunks.setdefault(idx, []).append(ch)
-
-    if len(layer_chunks) <= 1:
-        return  # single layer — nothing new to show
-
-    for idx in sorted(layer_chunks.keys()):
-        verts: list = []
-        edges: list = []
-        for ch in layer_chunks[idx]:
-            pts = ch.get_points()
-            if not pts:
-                continue
-            base = len(verts)
-            verts.extend(pts)
-            edges.extend((base + i, base + i + 1) for i in range(len(pts) - 1))
-
-        if not verts:
-            continue
-
-        obj_name = f"{path_name}_L{idx:02d}"
-        lmesh = bpy.data.meshes.new(obj_name)
-        lmesh.from_pydata(verts, edges, [])
-
-        if obj_name in bpy.data.objects:
-            bpy.data.objects[obj_name].data = lmesh
-            lobj = bpy.data.objects[obj_name]
-        else:
-            lobj = bpy.data.objects.new(obj_name, lmesh)
-            layers_col.objects.link(lobj)
-
-        lobj.location = (0, 0, 0)
-        color = _layer_color(idx)
-        lobj.color = color
-
-        # One solid material per layer object: diffuse_color for Solid mode,
-        # Emission node for Material Preview — no vertex-colour attribute needed.
-        mat_name = f"{obj_name}_mat"
-        if mat_name not in bpy.data.materials:
-            lmat = bpy.data.materials.new(mat_name)
-        else:
-            lmat = bpy.data.materials[mat_name]
-
-        lmat.diffuse_color = color
-        lmat.use_nodes = True
-        lnt = lmat.node_tree
-        lnt.nodes.clear()
-        lemit = lnt.nodes.new("ShaderNodeEmission")
-        lemit.inputs[0].default_value = color
-        lout = lnt.nodes.new("ShaderNodeOutputMaterial")
-        lnt.links.new(lemit.outputs[0], lout.inputs[0])
-
-        if lobj.data.materials:
-            lobj.data.materials[0] = lmat
-        else:
-            lobj.data.materials.append(lmat)
-
-        # Ensure the object is only in the Layers collection
-        if obj_name not in [o.name for o in layers_col.objects]:
-            try:
-                bpy.context.collection.objects.unlink(lobj)
-            except RuntimeError:
-                pass
-            layers_col.objects.link(lobj)
-
-    # Rapid traversal objects — one per layer index, in red
-    if rapid_by_layer:
-        _RAPID_COLOR = (1.0, 0.1, 0.1, 1.0)
-        for _r_idx, (_rpts, _redges) in rapid_by_layer.items():
-            if not _rpts:
-                continue
-            rp_name = f"{path_name}_Lrp{_r_idx:02d}" if _r_idx >= 0 else f"{path_name}_Lrp"
-            rp_mesh = bpy.data.meshes.new(rp_name)
-            rp_mesh.from_pydata(_rpts, _redges, [])
-            if rp_name in bpy.data.objects:
-                bpy.data.objects[rp_name].data = rp_mesh
-                rp_obj = bpy.data.objects[rp_name]
-            else:
-                rp_obj = bpy.data.objects.new(rp_name, rp_mesh)
-                layers_col.objects.link(rp_obj)
-            rp_obj.location = (0, 0, 0)
-            rp_obj.color = _RAPID_COLOR
-            rp_mat_name = f"{rp_name}_mat"
-            if rp_mat_name not in bpy.data.materials:
-                rp_mat = bpy.data.materials.new(rp_mat_name)
-            else:
-                rp_mat = bpy.data.materials[rp_mat_name]
-            rp_mat.diffuse_color = _RAPID_COLOR
-            rp_mat.use_nodes = True
-            rp_nt = rp_mat.node_tree
-            rp_nt.nodes.clear()
-            rp_emit = rp_nt.nodes.new("ShaderNodeEmission")
-            rp_emit.inputs[0].default_value = _RAPID_COLOR
-            rp_out = rp_nt.nodes.new("ShaderNodeOutputMaterial")
-            rp_nt.links.new(rp_emit.outputs[0], rp_out.inputs[0])
-            if rp_obj.data.materials:
-                rp_obj.data.materials[0] = rp_mat
-            else:
-                rp_obj.data.materials.append(rp_mat)
-            if rp_name not in [obj.name for obj in layers_col.objects]:
-                try:
-                    bpy.context.collection.objects.unlink(rp_obj)
-                except RuntimeError:
-                    pass
-                layers_col.objects.link(rp_obj)
-
-    log.info(f"[Color] Created {len(layer_chunks)} layer vis objects for {path_name}")
-
-
 def chunks_to_mesh(chunks, o):
     """Convert sampled chunks into a mesh path for a given optimization object.
 
@@ -1410,45 +1182,9 @@ def chunks_to_mesh(chunks, o):
     scene = bpy.context.scene
     machine = scene.cam_machine
 
-    # Clear stale layer-vis objects immediately so the viewport updates
-    # as soon as mesh building starts rather than after it finishes.
-    _early_path_name = scene.cam_names.path_name_full
-    _early_layers_col = bpy.data.collections.get("Layers")
-    if _early_layers_col:
-        _early_prefix = f"{_early_path_name}_L"
-        for _stale_obj in [
-            obj for obj in list(_early_layers_col.objects) if obj.name.startswith(_early_prefix)
-        ]:
-            _stale_mesh = _stale_obj.data
-            _early_layers_col.objects.unlink(_stale_obj)
-            bpy.data.objects.remove(_stale_obj)
-            if _stale_mesh and _stale_mesh.users == 0:
-                bpy.data.meshes.remove(_stale_mesh)
-
     vertices = []
-    colors = []
 
     free_height = o.movement.free_height
-
-    # Per-vertex color palette: red=rapids, green=final/surface layer,
-    # cycling palette for intermediate rough layers.
-    _RAPID_COLOR = (1.0, 0.1, 0.1, 1.0)
-    _FINAL_LAYER_COLOR = (0.05, 0.8, 0.1, 1.0)
-    _LAYER_PALETTE = [
-        (0.6, 0.0, 0.9, 1.0),  # purple
-        (0.8, 0.7, 0.0, 1.0),  # dark yellow
-        (0.1, 0.35, 0.95, 1.0),  # blue
-        (0.0, 0.75, 0.75, 1.0),  # cyan
-        (0.9, 0.4, 0.0, 1.0),  # orange
-        (0.75, 0.0, 0.55, 1.0),  # magenta
-    ]
-
-    def _chunk_color(chunk):
-        idx = getattr(chunk, "layer_index", -1)
-        n = getattr(chunk, "num_layers", 1)
-        if idx < 0 or n <= 1 or idx == n - 1:
-            return _FINAL_LAYER_COLOR
-        return _LAYER_PALETTE[idx % len(_LAYER_PALETTE)]
 
     three_axis, four_axis, five_axis, indexed_four_axis, indexed_five_axis = get_operation_axes(o)
 
@@ -1467,7 +1203,6 @@ def chunks_to_mesh(chunks, o):
     if three_axis:
         origin = user_origin if machine.use_position_definitions else default_origin
         vertices = [origin]
-        colors = [_RAPID_COLOR]
 
     if not three_axis:
         vertices_rotations = []
@@ -1496,60 +1231,12 @@ def chunks_to_mesh(chunks, o):
     e = 0.0001
     lifted = True
 
-    # Terrain-following rapid: for rest machining parallel ops, scan the Z-map
-    # along the gap between two consecutive chunks and use max(terrain+clearance,
-    # free_height) as the lift Z.  This is always safe and reduces lift height
-    # when the user has set a low free_height.
-    rest_rapid_enabled = (
-        getattr(o, "use_rest_machining", False)
-        and o.strategy == "PARALLEL"
-        and three_axis
-        and getattr(o, "rest_zmap", None) is not None
-    )
-    if rest_rapid_enabled:
-        _rest_pixsize = o.optimisation.pixsize
-        _rest_coordoff = o.borderwidth + _rest_pixsize / 2.0
-        _rest_minx = o.min.x
-        _rest_miny = o.min.y
-        _rest_clearance = getattr(o, "rest_terrain_clearance", 0.003)
-        _rest_zmap = o.rest_zmap
-
-    def _terrain_lift_z(ax, ay, bx, by):
-        """Scan Z-map along line A→B, return max(terrain+clearance, free_height)."""
-        steps = max(2, int(((bx - ax) ** 2 + (by - ay) ** 2) ** 0.5 / _rest_pixsize))
-        peak = free_height
-        for k in range(steps + 1):
-            t = k / steps
-            wx = ax + t * (bx - ax)
-            wy = ay + t * (by - ay)
-            xi = int(round((wx - _rest_minx) / _rest_pixsize + _rest_coordoff))
-            yi = int(round((wy - _rest_miny) / _rest_pixsize + _rest_coordoff))
-            if 0 <= xi < _rest_zmap.shape[0] and 0 <= yi < _rest_zmap.shape[1]:
-                cand = _rest_zmap[xi, yi] + _rest_clearance
-                if cand > peak:
-                    peak = cand
-        return peak
-
-    _layer_indices = sorted(
-        set(getattr(ch, "layer_index", None) for ch in chunks if ch.count() > 0)
-    )
-    _num_layers_vals = sorted(
-        set(getattr(ch, "num_layers", None) for ch in chunks if ch.count() > 0)
-    )
-    log.info(f"[Color] layer_index values in chunks: {_layer_indices}")
-    log.info(f"[Color] num_layers values in chunks: {_num_layers_vals}")
-
-    _rapid_segs_by_layer: dict = {}  # layer_idx -> list of (pt_a, pt_b) pairs
-    _next_drop_z = free_height  # synchronized with each chunk's lift_z
-
     for chunk_index in range(0, len(chunks)):
         chunk = chunks[chunk_index]
         # TODO: there is a case where parallel+layers+zigzag ramps send empty chunks here...
         if chunk.count() > 0:
             if o.optimisation.optimize:
                 chunk = optimize_chunk(chunk, o)
-
-            layer_idx = getattr(chunk, "layer_index", -1)
 
             # lift and drop
             if lifted:
@@ -1558,24 +1245,17 @@ def chunks_to_mesh(chunks, o):
                     vertex = (
                         chunk.get_point(0)[0],
                         chunk.get_point(0)[1],
-                        _next_drop_z,
-                    )
-                    # Rapid: prev pos → above chunk start (horizontal), then drop to first cut
-                    _prev = vertices[-1] if vertices else vertex
-                    _rapid_segs_by_layer.setdefault(layer_idx, []).extend(
-                        [(_prev, vertex), (vertex, chunk.get_point(0))]
+                        free_height,
                     )
                 # otherwise, continue with the next chunk without lifting/dropping
                 else:
                     vertex = chunk.startpoints[0]
                     vertices_rotations.append(chunk.rotations[0])
                 vertices.append(vertex)
-                colors.append(_RAPID_COLOR)
 
             # add whole chunk
             chunk_points = chunk.get_points()
             vertices.extend(chunk_points)
-            colors.extend([_chunk_color(chunk)] * len(chunk_points))
 
             # add rotations for n-axis
             if not three_axis:
@@ -1602,48 +1282,15 @@ def chunks_to_mesh(chunks, o):
 
             if lift:
                 if three_axis or indexed_five_axis or indexed_four_axis:
-                    if rest_rapid_enabled and chunk_index < len(chunks) - 1:
-                        # Terrain-following flat-top rapid: find max terrain along
-                        # the gap and lift only as high as needed (min = free_height).
-                        next_chunk = chunks[chunk_index + 1]
-                        lx, ly = chunk.get_point(-1)[0], chunk.get_point(-1)[1]
-                        nx, ny = next_chunk.get_point(0)[0], next_chunk.get_point(0)[1]
-                        lift_z = _terrain_lift_z(lx, ly, nx, ny)
-                    elif chunk_index < len(chunks) - 1 and chunks[chunk_index + 1].count() > 0:
-                        # Endpoint heuristic: lift just enough to clear both cut endpoints,
-                        # never exceeding the configured safe height.
-                        _last_z = chunk.get_point(-1)[2]
-                        _next_first_z = chunks[chunk_index + 1].get_point(0)[2]
-                        lift_z = min(free_height, max(_last_z, _next_first_z) + 0.005)
-                    else:
-                        lift_z = free_height
-                    _next_drop_z = lift_z  # drop into the next chunk at the same height
-                    vertex = (chunk.get_point(-1)[0], chunk.get_point(-1)[1], lift_z)
-                    # Rapid: last cut point → above chunk end (vertical ascent)
-                    _rapid_segs_by_layer.setdefault(layer_idx, []).append(
-                        (chunk.get_point(-1), vertex)
-                    )
+                    vertex = (chunk.get_point(-1)[0], chunk.get_point(-1)[1], free_height)
                 else:
                     vertex = chunk.startpoints[-1]
                     vertices_rotations.append(chunk.rotations[-1])
                 vertices.append(vertex)
-                colors.append(_RAPID_COLOR)
             lifted = lift
 
     if o.optimisation.use_exact and not o.optimisation.use_opencamlib:
         cleanup_bullet_collision(o)
-
-    # Convert per-layer rapid segment pairs to (pts, edges) for visualization.
-    _rapid_by_layer: dict = {}
-    for _l_idx, _segs in _rapid_segs_by_layer.items():
-        _rpts: list = []
-        _redges: list = []
-        _ri = 0
-        for _va, _vb in _segs:
-            _rpts.extend((_va, _vb))
-            _redges.append((_ri, _ri + 1))
-            _ri += 2
-        _rapid_by_layer[_l_idx] = (_rpts, _redges)
 
     log.info(f"Path Calculation Time: {time.time() - t}")
     t = time.time()
@@ -1691,11 +1338,6 @@ def chunks_to_mesh(chunks, o):
         add_collections()
         bpy.context.collection.objects.unlink(ob)
         collections["Paths"].objects.link(ob)
-
-    # Per-layer visualization objects (one solid-color mesh per layer).
-    # Uses ob.color + mat.diffuse_color so colors show in Solid AND Material
-    # Preview modes without relying on vertex-colour interpolation on edges.
-    _build_layer_vis_objects(chunks, path_name, scene, rapid_by_layer=_rapid_by_layer)
 
     # parent the path object to source object if object mode
     if (o.geometry_source == "OBJECT") and o.parent_path_to_object:

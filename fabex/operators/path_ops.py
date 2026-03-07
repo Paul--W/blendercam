@@ -462,102 +462,21 @@ async def _calc_path(operator, context):
     if o.use_layers:
         o.movement.parallel_step_back = False
 
-    # --- Rest Machining: validate and seed Z-map from roughing path object ---
+    # --- Rest Machining: validate and seed Z-map ---
     o.rest_zmap = None
     o.rest_stats_skipped = 0
     o.rest_stats_cut = 0
     if o.use_rest_machining:
-        prior_name = o.rest_machining_operation
-        if not prior_name or prior_name == "NONE":
-            operator.report(
-                {"ERROR"},
-                "Rest Machining is enabled but no previous operation is selected.",
-            )
-            return {"FINISHED", False}
-        if prior_name == o.name:
-            operator.report(
-                {"ERROR"},
-                "Rest Machining: an operation cannot use its own path as roughing stock.",
-            )
-            return {"FINISHED", False}
-        if o.strategy != "PARALLEL":
-            operator.report(
-                {"ERROR"},
-                "Rest Machining is only supported for the Parallel strategy.",
-            )
-            return {"FINISHED", False}
-        if o.optimisation.use_exact:
-            operator.report(
-                {"ERROR"},
-                "Rest Machining requires image mode. Disable 'Use Exact Mode'.",
-            )
-            return {"FINISHED", False}
-        prior_op = s.cam_operations.get(prior_name)
-        if prior_op is None:
-            operator.report(
-                {"ERROR"},
-                f"Rest Machining: operation '{prior_name}' not found in this scene.",
-            )
-            return {"FINISHED", False}
-        if not prior_op.path_object_name or prior_op.path_object_name not in bpy.data.objects:
-            operator.report(
-                {"ERROR"},
-                f"Rest Machining: '{prior_name}' has no calculated path. "
-                "Calculate that operation first.",
-            )
-            return {"FINISHED", False}
+        from ..strategies.rest_machining import validate_and_seed
 
-        from ..utilities.image_utils import seed_zmap_from_roughing_path
-
-        log.info(f"[Rest Machining] Seeding Z-map from roughing path '{prior_name}'")
-        zmap = await seed_zmap_from_roughing_path(o)
-        if zmap is not None:
-            o.rest_zmap = zmap
-            log.info(f"[Rest Machining] Z-map ready: shape={zmap.shape}")
-        else:
-            operator.report(
-                {"WARNING"},
-                f"Rest Machining: could not build Z-map from '{prior_name}'. "
-                "Path will be calculated without rest machining.",
-            )
+        success, error_msg = await validate_and_seed(o, s)
+        if not success:
+            operator.report({"ERROR"}, error_msg)
+            return {"FINISHED", False}
 
     try:
         await get_path(context, o)
         log.info("Got Path Okay")
-
-        # Rest machining time savings summary
-        if o.use_rest_machining and o.strategy == "PARALLEL":
-            skipped = getattr(o, "rest_stats_skipped", 0)
-            cut = getattr(o, "rest_stats_cut", 0)
-            total = skipped + cut
-            if total > 0:
-                pct_skip = 100.0 * skipped / total
-                # Estimate distance: points × stepover (distance_between_paths)
-                step = o.distance_between_paths
-                skip_dist_m = skipped * step
-                cut_dist_m = cut * step
-                f_cut = max(o.feedrate, 0.0001)
-                machine = bpy.context.scene.cam_machine
-                f_rapid = max(getattr(machine, "feedrate_rapid", f_cut * 5), f_cut)
-                t_cut_everywhere = (skipped + cut) * step / f_cut / 60.0
-                t_rest = cut * step / f_cut / 60.0 + skipped * step / f_rapid / 60.0
-                t_saved = t_cut_everywhere - t_rest
-                log.info("-" * 60)
-                log.info("[Rest Machining Results]")
-                log.info(
-                    f"Points skipped : {skipped:>10,}  ({pct_skip:.1f}%)"
-                    f"  ~{skip_dist_m:.1f} m at rapid"
-                )
-                log.info(
-                    f"Points cut     : {cut:>10,}  ({100 - pct_skip:.1f}%)"
-                    f"  ~{cut_dist_m:.1f} m at feedrate"
-                )
-                log.info(
-                    f"Est. time saved: {t_saved:.1f} min "
-                    f"(vs {t_cut_everywhere:.1f} min cut-everywhere = "
-                    f"{100 * t_saved / t_cut_everywhere:.0f}% reduction)"
-                )
-                log.info("-" * 60)
 
         # Restore source mesh as active object so that adding a new operation
         # auto-picks the source mesh rather than the generated CAM path

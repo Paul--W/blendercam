@@ -358,25 +358,6 @@ def update_chipload(self, context):
     log.info(f"Chipload per Tooth: {o.info.chipload_per_tooth}")
 
 
-def _suggest_rest_layer_height(op):
-    """Auto-suggest rest_layer_height based on cutter type and diameter."""
-    from math import sqrt
-
-    d = op.cutter_diameter
-    cutter_type = op.cutter_type
-    if cutter_type in ["BALLNOSE", "BALLCONE"]:
-        # Cusp height formula gives good surface quality at 25% of diameter
-        suggested = d * 0.25
-    elif cutter_type == "VCARVE":
-        suggested = d * 0.2
-    else:
-        # END, CYLCONE, CUSTOM etc: side-load limit ~30% of diameter
-        suggested = d * 0.3
-    op.rest_layer_height = suggested
-    # Only reset final layer height if it's at default (0 = follow rest_layer_height)
-    # so manual overrides are preserved
-
-
 def update_offset_image(self, context):
     """Refresh the Offset Image Tag for re-rendering.
 
@@ -392,7 +373,9 @@ def update_offset_image(self, context):
     self.changed = True
     self.update_offset_image_tag = True
     if self.use_rest_machining:
-        _suggest_rest_layer_height(self)
+        from ..strategies.rest_machining import suggest_layer_height
+
+        suggest_layer_height(self)
 
 
 def update_Z_buffer_image(self, context):
@@ -412,7 +395,9 @@ def update_Z_buffer_image(self, context):
     self.update_offset_image_tag = True
     get_operation_sources(self)
     if self.use_rest_machining:
-        _suggest_rest_layer_height(self)
+        from ..strategies.rest_machining import suggest_layer_height
+
+        suggest_layer_height(self)
 
 
 def update_image_size_y(self, context):

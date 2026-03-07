@@ -12,6 +12,12 @@ from ..utilities.strategy_utils import parallel_pattern
 
 
 async def parallel(o):
+    if getattr(o, "use_rest_machining", False):
+        from . import rest_machining
+
+        await rest_machining.parallel(o)
+        return
+
     log.info("~ Strategy: Parallel ~")
 
     minx, miny, minz, maxx, maxy, maxz = o.min.x, o.min.y, o.min.z, o.max.x, o.max.y, o.max.z
@@ -23,13 +29,8 @@ async def parallel(o):
     chunks.extend(await sample_chunks(o, pathSamples, layers))
     log.info("Sampling Finished Successfully")
 
-    if getattr(o, "use_rest_machining", False):
-        # Rest machining creates O(skip_events) chunk boundaries — sort_chunks is O(n²) and
-        # would hang. Chunks from sample_chunks are already in optimal scan-line order.
-        log.info(f"Sorting skipped (rest machining, {len(chunks)} chunks already in scan order)")
-    else:
-        log.info("Sorting")
-        chunks = await sort_chunks(chunks, o)
+    log.info("Sorting")
+    chunks = await sort_chunks(chunks, o)
 
     if o.movement.ramp:
         for ch in chunks:
