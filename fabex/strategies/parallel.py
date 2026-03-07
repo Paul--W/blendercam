@@ -23,8 +23,13 @@ async def parallel(o):
     chunks.extend(await sample_chunks(o, pathSamples, layers))
     log.info("Sampling Finished Successfully")
 
-    log.info("Sorting")
-    chunks = await sort_chunks(chunks, o)
+    if getattr(o, "use_rest_machining", False):
+        # Rest machining creates O(skip_events) chunk boundaries — sort_chunks is O(n²) and
+        # would hang. Chunks from sample_chunks are already in optimal scan-line order.
+        log.info(f"Sorting skipped (rest machining, {len(chunks)} chunks already in scan order)")
+    else:
+        log.info("Sorting")
+        chunks = await sort_chunks(chunks, o)
 
     if o.movement.ramp:
         for ch in chunks:
