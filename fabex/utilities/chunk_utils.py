@@ -1226,7 +1226,7 @@ async def sort_chunks(chunks, o, last_pos=None):
     return sortedchunks
 
 
-def _build_layer_vis_objects(chunks, path_name, scene, rapid_pts=None, rapid_edges=None):
+def _build_layer_vis_objects(chunks, path_name, scene, rapid_by_layer=None):
     """Create per-layer visualization mesh objects alongside the main cam path.
 
     One object per unique layer_index is created and placed in a 'Layers'
@@ -1343,43 +1343,46 @@ def _build_layer_vis_objects(chunks, path_name, scene, rapid_pts=None, rapid_edg
                 pass
             layers_col.objects.link(lobj)
 
-    # Rapid traversal object (red)
-    if rapid_pts and rapid_edges:
+    # Rapid traversal objects — one per layer index, in red
+    if rapid_by_layer:
         _RAPID_COLOR = (1.0, 0.1, 0.1, 1.0)
-        rp_name = f"{path_name}_Lrp"
-        rp_mesh = bpy.data.meshes.new(rp_name)
-        rp_mesh.from_pydata(rapid_pts, rapid_edges, [])
-        if rp_name in bpy.data.objects:
-            bpy.data.objects[rp_name].data = rp_mesh
-            rp_obj = bpy.data.objects[rp_name]
-        else:
-            rp_obj = bpy.data.objects.new(rp_name, rp_mesh)
-            layers_col.objects.link(rp_obj)
-        rp_obj.location = (0, 0, 0)
-        rp_obj.color = _RAPID_COLOR
-        rp_mat_name = f"{rp_name}_mat"
-        if rp_mat_name not in bpy.data.materials:
-            rp_mat = bpy.data.materials.new(rp_mat_name)
-        else:
-            rp_mat = bpy.data.materials[rp_mat_name]
-        rp_mat.diffuse_color = _RAPID_COLOR
-        rp_mat.use_nodes = True
-        rp_nt = rp_mat.node_tree
-        rp_nt.nodes.clear()
-        rp_emit = rp_nt.nodes.new("ShaderNodeEmission")
-        rp_emit.inputs[0].default_value = _RAPID_COLOR
-        rp_out = rp_nt.nodes.new("ShaderNodeOutputMaterial")
-        rp_nt.links.new(rp_emit.outputs[0], rp_out.inputs[0])
-        if rp_obj.data.materials:
-            rp_obj.data.materials[0] = rp_mat
-        else:
-            rp_obj.data.materials.append(rp_mat)
-        if rp_name not in [obj.name for obj in layers_col.objects]:
-            try:
-                bpy.context.collection.objects.unlink(rp_obj)
-            except RuntimeError:
-                pass
-            layers_col.objects.link(rp_obj)
+        for _r_idx, (_rpts, _redges) in rapid_by_layer.items():
+            if not _rpts:
+                continue
+            rp_name = f"{path_name}_Lrp{_r_idx:02d}" if _r_idx >= 0 else f"{path_name}_Lrp"
+            rp_mesh = bpy.data.meshes.new(rp_name)
+            rp_mesh.from_pydata(_rpts, _redges, [])
+            if rp_name in bpy.data.objects:
+                bpy.data.objects[rp_name].data = rp_mesh
+                rp_obj = bpy.data.objects[rp_name]
+            else:
+                rp_obj = bpy.data.objects.new(rp_name, rp_mesh)
+                layers_col.objects.link(rp_obj)
+            rp_obj.location = (0, 0, 0)
+            rp_obj.color = _RAPID_COLOR
+            rp_mat_name = f"{rp_name}_mat"
+            if rp_mat_name not in bpy.data.materials:
+                rp_mat = bpy.data.materials.new(rp_mat_name)
+            else:
+                rp_mat = bpy.data.materials[rp_mat_name]
+            rp_mat.diffuse_color = _RAPID_COLOR
+            rp_mat.use_nodes = True
+            rp_nt = rp_mat.node_tree
+            rp_nt.nodes.clear()
+            rp_emit = rp_nt.nodes.new("ShaderNodeEmission")
+            rp_emit.inputs[0].default_value = _RAPID_COLOR
+            rp_out = rp_nt.nodes.new("ShaderNodeOutputMaterial")
+            rp_nt.links.new(rp_emit.outputs[0], rp_out.inputs[0])
+            if rp_obj.data.materials:
+                rp_obj.data.materials[0] = rp_mat
+            else:
+                rp_obj.data.materials.append(rp_mat)
+            if rp_name not in [obj.name for obj in layers_col.objects]:
+                try:
+                    bpy.context.collection.objects.unlink(rp_obj)
+                except RuntimeError:
+                    pass
+                layers_col.objects.link(rp_obj)
 
     log.info(f"[Color] Created {len(layer_chunks)} layer vis objects for {path_name}")
 
@@ -1536,12 +1539,16 @@ def chunks_to_mesh(chunks, o):
     log.info(f"[Color] layer_index values in chunks: {_layer_indices}")
     log.info(f"[Color] num_layers values in chunks: {_num_layers_vals}")
 
+    _rapid_segs_by_layer: dict = {}  # layer_idx -> list of (pt_a, pt_b) pairs
+
     for chunk_index in range(0, len(chunks)):
         chunk = chunks[chunk_index]
         # TODO: there is a case where parallel+layers+zigzag ramps send empty chunks here...
         if chunk.count() > 0:
             if o.optimisation.optimize:
                 chunk = optimize_chunk(chunk, o)
+
+            layer_idx = getattr(chunk, "layer_index", -1)
 
             # lift and drop
             if lifted:
@@ -1551,6 +1558,11 @@ def chunks_to_mesh(chunks, o):
                         chunk.get_point(0)[0],
                         chunk.get_point(0)[1],
                         free_height,
+                    )
+                    # Rapid: prev pos → above chunk start (horizontal), then drop to first cut
+                    _prev = vertices[-1] if vertices else vertex
+                    _rapid_segs_by_layer.setdefault(layer_idx, []).extend(
+                        [(_prev, vertex), (vertex, chunk.get_point(0))]
                     )
                 # otherwise, continue with the next chunk without lifting/dropping
                 else:
@@ -1599,6 +1611,10 @@ def chunks_to_mesh(chunks, o):
                     else:
                         lift_z = free_height
                     vertex = (chunk.get_point(-1)[0], chunk.get_point(-1)[1], lift_z)
+                    # Rapid: last cut point → above chunk end (vertical ascent)
+                    _rapid_segs_by_layer.setdefault(layer_idx, []).append(
+                        (chunk.get_point(-1), vertex)
+                    )
                 else:
                     vertex = chunk.startpoints[-1]
                     vertices_rotations.append(chunk.rotations[-1])
@@ -1609,17 +1625,17 @@ def chunks_to_mesh(chunks, o):
     if o.optimisation.use_exact and not o.optimisation.use_opencamlib:
         cleanup_bullet_collision(o)
 
-    # Collect rapid-move segments: consecutive _RAPID_COLOR vertex pairs.
-    # Structure in vertices/colors: ..., lift(R), drop(R), cuts, lift(R), drop(R), ...
-    # Each (R, R) consecutive pair is one rapid traversal segment.
-    _rapid_pts: list = []
-    _rapid_edges: list = []
-    _ri = 0
-    for _ii in range(len(vertices) - 1):
-        if colors[_ii] == _RAPID_COLOR and colors[_ii + 1] == _RAPID_COLOR:
-            _rapid_pts.extend((vertices[_ii], vertices[_ii + 1]))
-            _rapid_edges.append((_ri, _ri + 1))
+    # Convert per-layer rapid segment pairs to (pts, edges) for visualization.
+    _rapid_by_layer: dict = {}
+    for _l_idx, _segs in _rapid_segs_by_layer.items():
+        _rpts: list = []
+        _redges: list = []
+        _ri = 0
+        for _va, _vb in _segs:
+            _rpts.extend((_va, _vb))
+            _redges.append((_ri, _ri + 1))
             _ri += 2
+        _rapid_by_layer[_l_idx] = (_rpts, _redges)
 
     log.info(f"Path Calculation Time: {time.time() - t}")
     t = time.time()
@@ -1671,9 +1687,7 @@ def chunks_to_mesh(chunks, o):
     # Per-layer visualization objects (one solid-color mesh per layer).
     # Uses ob.color + mat.diffuse_color so colors show in Solid AND Material
     # Preview modes without relying on vertex-colour interpolation on edges.
-    _build_layer_vis_objects(
-        chunks, path_name, scene, rapid_pts=_rapid_pts, rapid_edges=_rapid_edges
-    )
+    _build_layer_vis_objects(chunks, path_name, scene, rapid_by_layer=_rapid_by_layer)
 
     # parent the path object to source object if object mode
     if (o.geometry_source == "OBJECT") and o.parent_path_to_object:
