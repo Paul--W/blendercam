@@ -1226,6 +1226,126 @@ async def sort_chunks(chunks, o, last_pos=None):
     return sortedchunks
 
 
+def _build_layer_vis_objects(chunks, path_name, scene):
+    """Create per-layer visualization mesh objects alongside the main cam path.
+
+    One object per unique layer_index is created and placed in a 'Layers'
+    sub-collection inside 'Paths'.  Each object gets ob.color AND
+    mat.diffuse_color so the layer color is visible in BOTH Solid mode and
+    Material Preview — no vertex-colour interpolation needed.
+    """
+    _FINAL_LAYER_COLOR = (0.05, 0.8, 0.1, 1.0)
+    _LAYER_PALETTE = [
+        (0.6, 0.0, 0.9, 1.0),  # purple
+        (0.8, 0.7, 0.0, 1.0),  # dark yellow
+        (0.1, 0.35, 0.95, 1.0),  # blue
+        (0.0, 0.75, 0.75, 1.0),  # cyan
+        (0.9, 0.4, 0.0, 1.0),  # orange
+        (0.75, 0.0, 0.55, 1.0),  # magenta
+    ]
+
+    num_layers = max(
+        (getattr(ch, "num_layers", 1) for ch in chunks if ch.count() > 0),
+        default=1,
+    )
+
+    def _layer_color(idx):
+        if idx < 0 or num_layers <= 1 or idx == num_layers - 1:
+            return _FINAL_LAYER_COLOR
+        return _LAYER_PALETTE[idx % len(_LAYER_PALETTE)]
+
+    # Ensure 'Layers' sub-collection exists inside 'Paths'
+    collections = bpy.data.collections
+    if "Paths" not in collections:
+        add_collections()
+    layers_col_name = "Layers"
+    if layers_col_name not in collections:
+        layers_col = bpy.data.collections.new(layers_col_name)
+        collections["Paths"].children.link(layers_col)
+    else:
+        layers_col = collections[layers_col_name]
+
+    # Clean up old layer objects for this operation
+    prefix = f"{path_name}_L"
+    for old_obj in [obj for obj in list(layers_col.objects) if obj.name.startswith(prefix)]:
+        old_mesh = old_obj.data
+        layers_col.objects.unlink(old_obj)
+        bpy.data.objects.remove(old_obj)
+        if old_mesh and old_mesh.users == 0:
+            bpy.data.meshes.remove(old_mesh)
+
+    # Group chunks by layer_index
+    layer_chunks: dict = {}
+    for ch in chunks:
+        if ch.count() > 0:
+            idx = getattr(ch, "layer_index", -1)
+            layer_chunks.setdefault(idx, []).append(ch)
+
+    if len(layer_chunks) <= 1:
+        return  # single layer — nothing new to show
+
+    for idx in sorted(layer_chunks.keys()):
+        verts: list = []
+        edges: list = []
+        for ch in layer_chunks[idx]:
+            pts = ch.get_points()
+            if not pts:
+                continue
+            base = len(verts)
+            verts.extend(pts)
+            edges.extend((base + i, base + i + 1) for i in range(len(pts) - 1))
+
+        if not verts:
+            continue
+
+        obj_name = f"{path_name}_L{idx:02d}"
+        lmesh = bpy.data.meshes.new(obj_name)
+        lmesh.from_pydata(verts, edges, [])
+
+        if obj_name in bpy.data.objects:
+            bpy.data.objects[obj_name].data = lmesh
+            lobj = bpy.data.objects[obj_name]
+        else:
+            lobj = bpy.data.objects.new(obj_name, lmesh)
+            layers_col.objects.link(lobj)
+
+        lobj.location = (0, 0, 0)
+        color = _layer_color(idx)
+        lobj.color = color
+
+        # One solid material per layer object: diffuse_color for Solid mode,
+        # Emission node for Material Preview — no vertex-colour attribute needed.
+        mat_name = f"{obj_name}_mat"
+        if mat_name not in bpy.data.materials:
+            lmat = bpy.data.materials.new(mat_name)
+        else:
+            lmat = bpy.data.materials[mat_name]
+
+        lmat.diffuse_color = color
+        lmat.use_nodes = True
+        lnt = lmat.node_tree
+        lnt.nodes.clear()
+        lemit = lnt.nodes.new("ShaderNodeEmission")
+        lemit.inputs[0].default_value = color
+        lout = lnt.nodes.new("ShaderNodeOutputMaterial")
+        lnt.links.new(lemit.outputs[0], lout.inputs[0])
+
+        if lobj.data.materials:
+            lobj.data.materials[0] = lmat
+        else:
+            lobj.data.materials.append(lmat)
+
+        # Ensure the object is only in the Layers collection
+        if obj_name not in [o.name for o in layers_col.objects]:
+            try:
+                bpy.context.collection.objects.unlink(lobj)
+            except RuntimeError:
+                pass
+            layers_col.objects.link(lobj)
+
+    log.info(f"[Color] Created {len(layer_chunks)} layer vis objects for {path_name}")
+
+
 def chunks_to_mesh(chunks, o):
     """Convert sampled chunks into a mesh path for a given optimization object.
 
@@ -1353,6 +1473,15 @@ def chunks_to_mesh(chunks, o):
                     peak = cand
         return peak
 
+    _layer_indices = sorted(
+        set(getattr(ch, "layer_index", None) for ch in chunks if ch.count() > 0)
+    )
+    _num_layers_vals = sorted(
+        set(getattr(ch, "num_layers", None) for ch in chunks if ch.count() > 0)
+    )
+    log.info(f"[Color] layer_index values in chunks: {_layer_indices}")
+    log.info(f"[Color] num_layers values in chunks: {_num_layers_vals}")
+
     for chunk_index in range(0, len(chunks)):
         chunk = chunks[chunk_index]
         # TODO: there is a case where parallel+layers+zigzag ramps send empty chunks here...
@@ -1436,17 +1565,6 @@ def chunks_to_mesh(chunks, o):
     mesh.name = path_name
     mesh.from_pydata(vertices, edges, [])
 
-    # Apply per-vertex colors (layer / rapid identification).
-    _CAM_COLOR_ATTR = "CAMPathColor"
-    if _CAM_COLOR_ATTR in mesh.color_attributes:
-        mesh.color_attributes.remove(mesh.color_attributes[_CAM_COLOR_ATTR])
-    if colors:
-        col_attr = mesh.color_attributes.new(
-            name=_CAM_COLOR_ATTR, type="FLOAT_COLOR", domain="POINT"
-        )
-        for _ci, _c in enumerate(colors):
-            col_attr.data[_ci].color = _c
-
     if path_name in scene.objects:
         scene.objects[path_name].data = mesh
         ob = scene.objects[path_name]
@@ -1475,30 +1593,6 @@ def chunks_to_mesh(chunks, o):
     ob.color = scene.cam_machine.path_color
     o.path_object_name = path_name
 
-    # Assign a shared emission material that reads CAMPathColor so the path
-    # displays with per-layer / per-rapid colors in Material Preview mode.
-    _mat_name = "CAMPathColor"
-    if _mat_name not in bpy.data.materials:
-        _mat = bpy.data.materials.new(_mat_name)
-        _mat.use_nodes = True
-        _nt = _mat.node_tree
-        _nt.nodes.clear()
-        _attr = _nt.nodes.new("ShaderNodeAttribute")
-        _attr.attribute_name = _CAM_COLOR_ATTR
-        _attr.location = (-300, 0)
-        _emit = _nt.nodes.new("ShaderNodeEmission")
-        _emit.location = (0, 0)
-        _out = _nt.nodes.new("ShaderNodeOutputMaterial")
-        _out.location = (200, 0)
-        _nt.links.new(_attr.outputs["Color"], _emit.inputs["Color"])
-        _nt.links.new(_emit.outputs["Emission"], _out.inputs["Surface"])
-    else:
-        _mat = bpy.data.materials[_mat_name]
-    if ob.data.materials:
-        ob.data.materials[0] = _mat
-    else:
-        ob.data.materials.append(_mat)
-
     collections = bpy.data.collections
     if "Paths" in collections:
         bpy.context.collection.objects.unlink(ob)
@@ -1507,6 +1601,11 @@ def chunks_to_mesh(chunks, o):
         add_collections()
         bpy.context.collection.objects.unlink(ob)
         collections["Paths"].objects.link(ob)
+
+    # Per-layer visualization objects (one solid-color mesh per layer).
+    # Uses ob.color + mat.diffuse_color so colors show in Solid AND Material
+    # Preview modes without relying on vertex-colour interpolation on edges.
+    _build_layer_vis_objects(chunks, path_name, scene)
 
     # parent the path object to source object if object mode
     if (o.geometry_source == "OBJECT") and o.parent_path_to_object:
