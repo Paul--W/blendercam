@@ -1540,6 +1540,7 @@ def chunks_to_mesh(chunks, o):
     log.info(f"[Color] num_layers values in chunks: {_num_layers_vals}")
 
     _rapid_segs_by_layer: dict = {}  # layer_idx -> list of (pt_a, pt_b) pairs
+    _next_drop_z = free_height  # synchronized with each chunk's lift_z
 
     for chunk_index in range(0, len(chunks)):
         chunk = chunks[chunk_index]
@@ -1557,7 +1558,7 @@ def chunks_to_mesh(chunks, o):
                     vertex = (
                         chunk.get_point(0)[0],
                         chunk.get_point(0)[1],
-                        free_height,
+                        _next_drop_z,
                     )
                     # Rapid: prev pos → above chunk start (horizontal), then drop to first cut
                     _prev = vertices[-1] if vertices else vertex
@@ -1608,8 +1609,15 @@ def chunks_to_mesh(chunks, o):
                         lx, ly = chunk.get_point(-1)[0], chunk.get_point(-1)[1]
                         nx, ny = next_chunk.get_point(0)[0], next_chunk.get_point(0)[1]
                         lift_z = _terrain_lift_z(lx, ly, nx, ny)
+                    elif chunk_index < len(chunks) - 1 and chunks[chunk_index + 1].count() > 0:
+                        # Endpoint heuristic: lift just enough to clear both cut endpoints,
+                        # never exceeding the configured safe height.
+                        _last_z = chunk.get_point(-1)[2]
+                        _next_first_z = chunks[chunk_index + 1].get_point(0)[2]
+                        lift_z = min(free_height, max(_last_z, _next_first_z) + 0.005)
                     else:
                         lift_z = free_height
+                    _next_drop_z = lift_z  # drop into the next chunk at the same height
                     vertex = (chunk.get_point(-1)[0], chunk.get_point(-1)[1], lift_z)
                     # Rapid: last cut point → above chunk end (vertical ascent)
                     _rapid_segs_by_layer.setdefault(layer_idx, []).append(
