@@ -904,6 +904,8 @@ async def sample_chunks(o, pathSamples, layers):
                             terminatechunk = True
                             if len(ch.points) > 0:
                                 as_chunk = ch.to_chunk()
+                                as_chunk.layer_index = i
+                                as_chunk.num_layers = num_layers
                                 layerchunks[i].append(as_chunk)
                                 thisrunchunks[i].append(as_chunk)
                                 layeractivechunks[i] = CamPathChunkBuilder([])
@@ -982,6 +984,8 @@ async def sample_chunks(o, pathSamples, layers):
                 if terminatechunk:
                     if len(ch.points) > 0:
                         as_chunk = ch.to_chunk()
+                        as_chunk.layer_index = i
+                        as_chunk.num_layers = num_layers
                         layerchunks[i].append(as_chunk)
                         thisrunchunks[i].append(as_chunk)
                         layeractivechunks[i] = CamPathChunkBuilder([])
@@ -991,6 +995,8 @@ async def sample_chunks(o, pathSamples, layers):
             ch = layeractivechunks[i]
             if len(ch.points) > 0:
                 as_chunk = ch.to_chunk()
+                as_chunk.layer_index = i
+                as_chunk.num_layers = num_layers
                 layerchunks[i].append(as_chunk)
                 thisrunchunks[i].append(as_chunk)
                 layeractivechunks[i] = CamPathChunkBuilder([])
@@ -1243,8 +1249,29 @@ def chunks_to_mesh(chunks, o):
     scene = bpy.context.scene
     machine = scene.cam_machine
     vertices = []
+    colors = []
 
     free_height = o.movement.free_height
+
+    # Per-vertex color palette: red=rapids, green=final/surface layer,
+    # cycling palette for intermediate rough layers.
+    _RAPID_COLOR = (1.0, 0.1, 0.1, 1.0)
+    _FINAL_LAYER_COLOR = (0.05, 0.8, 0.1, 1.0)
+    _LAYER_PALETTE = [
+        (0.6, 0.0, 0.9, 1.0),  # purple
+        (0.8, 0.7, 0.0, 1.0),  # dark yellow
+        (0.1, 0.35, 0.95, 1.0),  # blue
+        (0.0, 0.75, 0.75, 1.0),  # cyan
+        (0.9, 0.4, 0.0, 1.0),  # orange
+        (0.75, 0.0, 0.55, 1.0),  # magenta
+    ]
+
+    def _chunk_color(chunk):
+        idx = getattr(chunk, "layer_index", -1)
+        n = getattr(chunk, "num_layers", 1)
+        if idx < 0 or n <= 1 or idx == n - 1:
+            return _FINAL_LAYER_COLOR
+        return _LAYER_PALETTE[idx % len(_LAYER_PALETTE)]
 
     three_axis, four_axis, five_axis, indexed_four_axis, indexed_five_axis = get_operation_axes(o)
 
@@ -1263,6 +1290,7 @@ def chunks_to_mesh(chunks, o):
     if three_axis:
         origin = user_origin if machine.use_position_definitions else default_origin
         vertices = [origin]
+        colors = [_RAPID_COLOR]
 
     if not three_axis:
         vertices_rotations = []
@@ -1346,9 +1374,12 @@ def chunks_to_mesh(chunks, o):
                     vertex = chunk.startpoints[0]
                     vertices_rotations.append(chunk.rotations[0])
                 vertices.append(vertex)
+                colors.append(_RAPID_COLOR)
 
             # add whole chunk
-            vertices.extend(chunk.get_points())
+            chunk_points = chunk.get_points()
+            vertices.extend(chunk_points)
+            colors.extend([_chunk_color(chunk)] * len(chunk_points))
 
             # add rotations for n-axis
             if not three_axis:
@@ -1389,6 +1420,7 @@ def chunks_to_mesh(chunks, o):
                     vertex = chunk.startpoints[-1]
                     vertices_rotations.append(chunk.rotations[-1])
                 vertices.append(vertex)
+                colors.append(_RAPID_COLOR)
             lifted = lift
 
     if o.optimisation.use_exact and not o.optimisation.use_opencamlib:
@@ -1403,6 +1435,17 @@ def chunks_to_mesh(chunks, o):
     mesh = bpy.data.meshes.new(path_name)
     mesh.name = path_name
     mesh.from_pydata(vertices, edges, [])
+
+    # Apply per-vertex colors (layer / rapid identification).
+    _CAM_COLOR_ATTR = "CAMPathColor"
+    if _CAM_COLOR_ATTR in mesh.color_attributes:
+        mesh.color_attributes.remove(mesh.color_attributes[_CAM_COLOR_ATTR])
+    if colors:
+        col_attr = mesh.color_attributes.new(
+            name=_CAM_COLOR_ATTR, type="FLOAT_COLOR", domain="POINT"
+        )
+        for _ci, _c in enumerate(colors):
+            col_attr.data[_ci].color = _c
 
     if path_name in scene.objects:
         scene.objects[path_name].data = mesh
@@ -1431,6 +1474,30 @@ def chunks_to_mesh(chunks, o):
     ob.location = (0, 0, 0)
     ob.color = scene.cam_machine.path_color
     o.path_object_name = path_name
+
+    # Assign a shared emission material that reads CAMPathColor so the path
+    # displays with per-layer / per-rapid colors in Material Preview mode.
+    _mat_name = "CAMPathColor"
+    if _mat_name not in bpy.data.materials:
+        _mat = bpy.data.materials.new(_mat_name)
+        _mat.use_nodes = True
+        _nt = _mat.node_tree
+        _nt.nodes.clear()
+        _attr = _nt.nodes.new("ShaderNodeAttribute")
+        _attr.attribute_name = _CAM_COLOR_ATTR
+        _attr.location = (-300, 0)
+        _emit = _nt.nodes.new("ShaderNodeEmission")
+        _emit.location = (0, 0)
+        _out = _nt.nodes.new("ShaderNodeOutputMaterial")
+        _out.location = (200, 0)
+        _nt.links.new(_attr.outputs["Color"], _emit.inputs["Color"])
+        _nt.links.new(_emit.outputs["Emission"], _out.inputs["Surface"])
+    else:
+        _mat = bpy.data.materials[_mat_name]
+    if ob.data.materials:
+        ob.data.materials[0] = _mat
+    else:
+        ob.data.materials.append(_mat)
 
     collections = bpy.data.collections
     if "Paths" in collections:
