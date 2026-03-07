@@ -1226,7 +1226,7 @@ async def sort_chunks(chunks, o, last_pos=None):
     return sortedchunks
 
 
-def _build_layer_vis_objects(chunks, path_name, scene):
+def _build_layer_vis_objects(chunks, path_name, scene, rapid_pts=None, rapid_edges=None):
     """Create per-layer visualization mesh objects alongside the main cam path.
 
     One object per unique layer_index is created and placed in a 'Layers'
@@ -1343,6 +1343,44 @@ def _build_layer_vis_objects(chunks, path_name, scene):
                 pass
             layers_col.objects.link(lobj)
 
+    # Rapid traversal object (red)
+    if rapid_pts and rapid_edges:
+        _RAPID_COLOR = (1.0, 0.1, 0.1, 1.0)
+        rp_name = f"{path_name}_Lrp"
+        rp_mesh = bpy.data.meshes.new(rp_name)
+        rp_mesh.from_pydata(rapid_pts, rapid_edges, [])
+        if rp_name in bpy.data.objects:
+            bpy.data.objects[rp_name].data = rp_mesh
+            rp_obj = bpy.data.objects[rp_name]
+        else:
+            rp_obj = bpy.data.objects.new(rp_name, rp_mesh)
+            layers_col.objects.link(rp_obj)
+        rp_obj.location = (0, 0, 0)
+        rp_obj.color = _RAPID_COLOR
+        rp_mat_name = f"{rp_name}_mat"
+        if rp_mat_name not in bpy.data.materials:
+            rp_mat = bpy.data.materials.new(rp_mat_name)
+        else:
+            rp_mat = bpy.data.materials[rp_mat_name]
+        rp_mat.diffuse_color = _RAPID_COLOR
+        rp_mat.use_nodes = True
+        rp_nt = rp_mat.node_tree
+        rp_nt.nodes.clear()
+        rp_emit = rp_nt.nodes.new("ShaderNodeEmission")
+        rp_emit.inputs[0].default_value = _RAPID_COLOR
+        rp_out = rp_nt.nodes.new("ShaderNodeOutputMaterial")
+        rp_nt.links.new(rp_emit.outputs[0], rp_out.inputs[0])
+        if rp_obj.data.materials:
+            rp_obj.data.materials[0] = rp_mat
+        else:
+            rp_obj.data.materials.append(rp_mat)
+        if rp_name not in [obj.name for obj in layers_col.objects]:
+            try:
+                bpy.context.collection.objects.unlink(rp_obj)
+            except RuntimeError:
+                pass
+            layers_col.objects.link(rp_obj)
+
     log.info(f"[Color] Created {len(layer_chunks)} layer vis objects for {path_name}")
 
 
@@ -1368,6 +1406,22 @@ def chunks_to_mesh(chunks, o):
     t = time.time()
     scene = bpy.context.scene
     machine = scene.cam_machine
+
+    # Clear stale layer-vis objects immediately so the viewport updates
+    # as soon as mesh building starts rather than after it finishes.
+    _early_path_name = scene.cam_names.path_name_full
+    _early_layers_col = bpy.data.collections.get("Layers")
+    if _early_layers_col:
+        _early_prefix = f"{_early_path_name}_L"
+        for _stale_obj in [
+            obj for obj in list(_early_layers_col.objects) if obj.name.startswith(_early_prefix)
+        ]:
+            _stale_mesh = _stale_obj.data
+            _early_layers_col.objects.unlink(_stale_obj)
+            bpy.data.objects.remove(_stale_obj)
+            if _stale_mesh and _stale_mesh.users == 0:
+                bpy.data.meshes.remove(_stale_mesh)
+
     vertices = []
     colors = []
 
@@ -1555,6 +1609,18 @@ def chunks_to_mesh(chunks, o):
     if o.optimisation.use_exact and not o.optimisation.use_opencamlib:
         cleanup_bullet_collision(o)
 
+    # Collect rapid-move segments: consecutive _RAPID_COLOR vertex pairs.
+    # Structure in vertices/colors: ..., lift(R), drop(R), cuts, lift(R), drop(R), ...
+    # Each (R, R) consecutive pair is one rapid traversal segment.
+    _rapid_pts: list = []
+    _rapid_edges: list = []
+    _ri = 0
+    for _ii in range(len(vertices) - 1):
+        if colors[_ii] == _RAPID_COLOR and colors[_ii + 1] == _RAPID_COLOR:
+            _rapid_pts.extend((vertices[_ii], vertices[_ii + 1]))
+            _rapid_edges.append((_ri, _ri + 1))
+            _ri += 2
+
     log.info(f"Path Calculation Time: {time.time() - t}")
     t = time.time()
 
@@ -1605,7 +1671,9 @@ def chunks_to_mesh(chunks, o):
     # Per-layer visualization objects (one solid-color mesh per layer).
     # Uses ob.color + mat.diffuse_color so colors show in Solid AND Material
     # Preview modes without relying on vertex-colour interpolation on edges.
-    _build_layer_vis_objects(chunks, path_name, scene)
+    _build_layer_vis_objects(
+        chunks, path_name, scene, rapid_pts=_rapid_pts, rapid_edges=_rapid_edges
+    )
 
     # parent the path object to source object if object mode
     if (o.geometry_source == "OBJECT") and o.parent_path_to_object:
