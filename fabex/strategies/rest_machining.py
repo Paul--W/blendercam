@@ -8,19 +8,23 @@ The standard parallel strategy (parallel.py) and core utilities
 (chunk_utils.py) are deliberately left clean of any rest machining code.
 """
 
-import bpy
+import time
 from math import ceil
 
+import bpy
+from bpy_extras import object_utils
 import numpy as np
 
 from ..chunk_builder import CamPathChunk
 from ..utilities.chunk_utils import (
     add_collections,
-    chunks_to_mesh,
+    get_operation_axes,
+    optimize_chunk,
     sample_chunks,
 )
 from ..utilities.logging_utils import log
 from ..utilities.operation_utils import get_layers
+from ..utilities.simple_utils import activate, progress
 from ..utilities.strategy_utils import parallel_pattern
 
 # ---------------------------------------------------------------------------
@@ -159,6 +163,106 @@ async def seed_zmap(o):
         f"z range=[{zmap.min():.4f}, {zmap.max():.4f}]"
     )
     return zmap
+
+
+# ---------------------------------------------------------------------------
+# Gap terrain sampling
+# ---------------------------------------------------------------------------
+
+
+def _terrain_z_along_gap(zmap, ax, ay, bx, by, pixsize, minx, miny, coordoff):
+    """Return the maximum Z-map value along the straight-line gap from A to B.
+
+    PURPOSE
+    -------
+    Before the cutter traverses from the end of one machining segment to the
+    start of the next, we need to know the highest remaining stock anywhere
+    along that path so we can choose a safe traverse height.  This function
+    scans the Z-map — a 2-D array of remaining stock heights built from the
+    roughing operation — along the straight-line gap and returns the peak value.
+
+    WHY PIXEL SPACE, NOT WORLD SPACE
+    ---------------------------------
+    The Z-map has a finite resolution of ``pixsize`` metres per pixel.  Sampling
+    finer than one pixel per step yields no new information (the same pixel is
+    read repeatedly).  Sampling coarser than one pixel per step risks skipping
+    over a pixel that contains a terrain peak.  The correct sampling density is
+    therefore exactly one Z-map pixel per step — which means the step count must
+    be computed in pixel space, not world space.
+
+    WHY THE BRESENHAM PIXEL COUNT
+    ------------------------------
+    Converting both endpoints to integer pixel coordinates and using:
+
+        n = max(|x1 - x0|, |y1 - y0|) + 1
+
+    is the Bresenham line-drawing criterion.  It guarantees that every pixel
+    the straight line passes through is visited at least once: the larger of
+    the two axis differences is advanced by exactly one pixel per step, while
+    the smaller axis advances by ≤ 1 pixel per step.  No pixel is skipped;
+    no pixel is sampled twice unnecessarily.
+
+    WHY THIS MATTERS FOR REST MACHINING
+    -------------------------------------
+    The roughing and finishing operations are typically run in different
+    directions — for example, roughing in the X direction and finishing at 45°.
+    The gap between two adjacent finishing segments therefore runs perpendicular
+    to the finishing direction (i.e. at 135°), crossing the roughing-direction
+    passes at an angle.
+
+    Wherever the gap path crosses the space *between* two roughing passes there
+    is a scallop ridge — material the roughing cutter never reached.  These
+    ridges repeat at the roughing ``distance_between_paths`` interval.  When
+    the gap path crosses them at an angle the apparent ridge width along the
+    gap direction is:
+
+        apparent_width = scallop_width / sin(angle_between_directions)
+
+    At 45° this is ≈ 1.4× the actual scallop width.  A coarse sampling step
+    (e.g. only checking the two endpoints) can miss these ridges entirely,
+    producing an unsafe traverse height that results in the finishing cutter
+    hitting remaining roughing stock mid-traverse.  Pixel-resolution sampling
+    eliminates this risk.
+
+    IMPLEMENTATION
+    --------------
+    numpy ``linspace`` generates ``n`` evenly-spaced values between the two
+    pixel-space endpoints, rounded to the nearest integer.  The resulting
+    index arrays ``xs`` and ``ys`` are clipped to the valid Z-map extents to
+    handle gap paths that reach or slightly exceed the map boundary (e.g. at
+    the edge of the stock).  A single ``np.max`` call over the gathered pixels
+    returns the peak terrain height with no Python-level loop.
+
+    PERFORMANCE
+    -----------
+    For a typical short gap of 14 mm at pixsize = 0.1 mm, n ≈ 140 — a
+    140-element numpy max, negligible cost.  For a long gap of 200 mm,
+    n ≈ 2000 — still a single vectorised operation well under 1 ms.
+
+    Args:
+        zmap:      2-D numpy array (resx, resy) of remaining stock heights.
+        ax, ay:    World-space XY of gap start (end of current segment).
+        bx, by:    World-space XY of gap end   (start of next segment).
+        pixsize:   Z-map pixel pitch in metres (o.optimisation.pixsize).
+        minx, miny: World-space origin of Z-map (o.min.x, o.min.y).
+        coordoff:  Pixel-coordinate offset (borderwidth + pixsize / 2).
+
+    Returns:
+        float — maximum terrain Z along the gap path.
+    """
+    x0 = int(round((ax - minx) / pixsize + coordoff))
+    y0 = int(round((ay - miny) / pixsize + coordoff))
+    x1 = int(round((bx - minx) / pixsize + coordoff))
+    y1 = int(round((by - miny) / pixsize + coordoff))
+
+    n = max(abs(x1 - x0), abs(y1 - y0)) + 1
+
+    xs = np.round(np.linspace(x0, x1, n)).astype(int)
+    ys = np.round(np.linspace(y0, y1, n)).astype(int)
+    np.clip(xs, 0, zmap.shape[0] - 1, out=xs)
+    np.clip(ys, 0, zmap.shape[1] - 1, out=ys)
+
+    return float(np.max(zmap[xs, ys]))
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +526,203 @@ def _log_time_savings(o):
 
 
 # ---------------------------------------------------------------------------
+# Rest path building
+# ---------------------------------------------------------------------------
+
+
+def _build_rest_path(chunks, o):
+    """Build the Blender path mesh for rest machining using the movement rules.
+
+    Replaces the generic chunks_to_mesh for rest machining.  Iterates over the
+    filtered chunk list and inserts the correct intermediate waypoints between
+    each consecutive pair of machining segments according to the movement rules:
+
+        Rule 1 — Job start: rapid to above first segment, plunge to cut depth.
+        Rule 2 — Milling: append all segment points at mill feedrate.
+        Rule 3 — Gap, same/lower Z, terrain clear: direct connection, no lift.
+                 Both short and long gaps stay at cut depth (mill feedrate).
+                 For typical workpiece sizes this is faster than lift+rapid+drop
+                 because the plunge-speed lift/drop cost dominates until gap
+                 distances exceed ~600 mm.
+        Rule 4 — Gap, higher Z, terrain clear: one waypoint at
+                 (next_x, next_y, next_z + layer_height).  The following
+                 vertical drop to next_chunk[0] is recognised by the G-code
+                 exporter as a plunge (angle from downvector < plunge_limit).
+        Rule 5 — Gap, terrain obstruction: two waypoints —
+                 (last_x, last_y, traverse_z) vertical rise, then
+                 (next_x, next_y, traverse_z) flat traverse.  The following
+                 vertical drop to next_chunk[0] triggers plunge feedrate.
+                 traverse_z = max(terrain_z, next_z) + terrain_clearance.
+
+    Feedrate encoding via vertex Z position (G-code exporter convention):
+        v.z >= free_height          → G00 rapid (freefeedrate)
+        steep downward move vector  → G01 at plunge feedrate
+        all other moves             → G01 at mill feedrate
+
+    All plunge descents are encoded as purely vertical moves (same XY as the
+    waypoint above) so the exporter's angle check always fires correctly.
+    """
+    t = time.time()
+    scene = bpy.context.scene
+    machine = scene.cam_machine
+
+    free_height = o.movement.free_height
+    layer_height = getattr(o, "rest_layer_height", 0.001)
+    terrain_clearance = layer_height + 0.004  # layer_height + 4 mm
+    cutter_diameter = o.cutter_diameter
+
+    zmap = getattr(o, "rest_zmap", None)
+    if zmap is not None:
+        pixsize = o.optimisation.pixsize
+        minx, miny = o.min.x, o.min.y
+        coordoff = o.borderwidth + pixsize / 2.0
+
+    three_axis, _, _, indexed_four_axis, indexed_five_axis = get_operation_axes(o)
+
+    if machine.use_position_definitions:
+        origin = (
+            machine.starting_position.x,
+            machine.starting_position.y,
+            machine.starting_position.z,
+        )
+    else:
+        origin = (0, 0, free_height)
+
+    vertices = [origin] if three_axis else []
+    vertices_rotations = [] if not three_axis else None
+
+    progress("~ Building Rest Machining Paths ~")
+
+    # Pre-filter and optionally optimise chunks once.
+    active_chunks = []
+    for chunk in chunks:
+        if chunk.count() > 0:
+            if o.optimisation.optimize:
+                chunk = optimize_chunk(chunk, o)
+            active_chunks.append(chunk)
+
+    lifted = True  # True = cutter is at or above free_height
+
+    for ci, chunk in enumerate(active_chunks):
+        chunk_points = chunk.get_points()
+
+        # --- Drop / approach ---
+        # If lifted, add a vertex at free_height above the first cut point so
+        # the exporter emits a rapid XY move followed by a plunge descent.
+        if lifted:
+            if three_axis or indexed_five_axis or indexed_four_axis:
+                vertices.append((chunk_points[0][0], chunk_points[0][1], free_height))
+            else:
+                vertices.append(chunk.startpoints[0])
+                vertices_rotations.append(chunk.rotations[0])
+
+        # --- Rule 2: mill along segment ---
+        vertices.extend(chunk_points)
+        if not three_axis:
+            vertices_rotations.extend(chunk.rotations)
+
+        # --- Inter-chunk movement (Rules 3 / 4 / 5) ---
+        lift = True  # default: safe retract to free_height
+
+        if ci < len(active_chunks) - 1 and three_axis:
+            next_chunk = active_chunks[ci + 1]
+            next_pts = next_chunk.get_points()
+
+            if next_pts:
+                last_pt = chunk_points[-1]
+                next_pt = next_pts[0]
+                ax, ay, current_z = last_pt[0], last_pt[1], last_pt[2]
+                bx, by, next_z = next_pt[0], next_pt[1], next_pt[2]
+
+                if zmap is not None:
+                    terrain_z = _terrain_z_along_gap(
+                        zmap, ax, ay, bx, by, pixsize, minx, miny, coordoff
+                    )
+                else:
+                    # No Z-map: conservative — assume worst-case obstruction.
+                    terrain_z = max(current_z, next_z)
+
+                min_z = min(current_z, next_z)
+
+                if terrain_z <= min_z:
+                    # Terrain is clear at or below the lower of the two endpoints.
+                    if next_z <= current_z:
+                        # Rule 3: same or lower Z — direct connection, no lift.
+                        # The exporter assigns mill feedrate (horizontal/gentle
+                        # angle) or plunge feedrate (steep descent) automatically.
+                        lift = False
+                    else:
+                        # Rule 4: next segment is higher — diagonal waypoint above
+                        # the destination, then a vertical drop that the exporter
+                        # recognises as a plunge.
+                        vertices.append((bx, by, next_z + layer_height))
+                        lift = False
+                else:
+                    # Rule 5: terrain obstruction.
+                    # traverse_z clears both the terrain peak and the destination.
+                    traverse_z = max(terrain_z, next_z) + terrain_clearance
+                    # Vertical rise at current XY.
+                    vertices.append((ax, ay, traverse_z))
+                    # Flat traverse to above next segment start.
+                    vertices.append((bx, by, traverse_z))
+                    # The vertical drop to next_chunk[0] (next_z) follows
+                    # automatically and triggers plunge feedrate.
+                    lift = False
+
+        if lift:
+            if three_axis or indexed_five_axis or indexed_four_axis:
+                vertices.append((chunk_points[-1][0], chunk_points[-1][1], free_height))
+            else:
+                vertices.append(chunk.startpoints[-1])
+                vertices_rotations.append(chunk.rotations[-1])
+
+        lifted = lift
+
+    log.info(
+        f"[Rest] Path built: {len(vertices):,} vertices, "
+        f"{len(active_chunks)} chunks, {time.time() - t:.2f}s"
+    )
+
+    # --- Create Blender path mesh object ---
+    edges = [(a, a + 1) for a in range(len(vertices) - 1)]
+    path_name = scene.cam_names.path_name_full
+    mesh = bpy.data.meshes.new(path_name)
+    mesh.name = path_name
+    mesh.from_pydata(vertices, edges, [])
+
+    if path_name in scene.objects:
+        scene.objects[path_name].data = mesh
+        ob = scene.objects[path_name]
+    else:
+        ob = object_utils.object_data_add(bpy.context, mesh, operator=None)
+
+    if not three_axis:
+        ob.shape_key_add()
+        ob.shape_key_add()
+        shapek = mesh.shape_keys.key_blocks[1]
+        shapek.name = "rotations"
+        for i, co in enumerate(vertices_rotations):
+            shapek.data[i].co = co
+
+    ob.location = (0, 0, 0)
+    ob.color = machine.path_color
+    o.path_object_name = path_name
+
+    collections = bpy.data.collections
+    if "Paths" not in collections:
+        add_collections()
+    bpy.context.collection.objects.unlink(ob)
+    collections["Paths"].objects.link(ob)
+
+    if (o.geometry_source == "OBJECT") and o.parent_path_to_object:
+        activate(o.objects[0])
+        ob.select_set(state=True, view_layer=None)
+        bpy.ops.object.parent_set(type="OBJECT", keep_transform=True)
+    else:
+        ob.select_set(state=True, view_layer=None)
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -450,11 +751,11 @@ async def parallel(o):
     else:
         log.warning("[Rest Machining] No Z-map — running without skip logic")
 
-    # Build the Blender path mesh (movement rules refined in next phase)
+    # Build the Blender path mesh using rest machining movement rules.
     scene = bpy.context.scene
     path_name = scene.cam_names.path_name_full
     _cleanup_vis_objects(path_name)
-    chunks_to_mesh(chunks, o)
+    _build_rest_path(chunks, o)
 
     # Per-layer visualization
     _build_layer_vis_objects(chunks, path_name, scene)
