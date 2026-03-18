@@ -970,12 +970,18 @@ async def sample_chunks(o, pathSamples, layers):
                     if not ch1.parents:
                         children.append(ch1)
 
-                # Use distance-based connectivity so each chunk links only to
-                # nearby neighbours (≈2 × stepover).  The old parent_child()
-                # created a complete bipartite graph (every parent ↔ every
-                # child), which caused O(n³) child-checking in sort_chunks when
-                # layers have thousands of chunks.
-                parent_child_distance(parents, children, o)
+                if o.strategy == "PARALLEL":
+                    # Use distance-based connectivity so each chunk links
+                    # only to nearby neighbours (≈2 × stepover).  The old
+                    # parent_child() creates a complete bipartite graph
+                    # (every parent ↔ every child), which causes O(n³)
+                    # child-checking in sort_chunks when layers have
+                    # thousands of chunks.  Safe for PARALLEL because
+                    # scan lines at the same position are always within
+                    # 2× stepover.
+                    parent_child_distance(parents, children, o)
+                else:
+                    parent_child(parents, children, o)
     timing_add(sortingtime)
     chunks = []
 
