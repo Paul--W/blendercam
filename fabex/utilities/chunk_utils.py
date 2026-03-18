@@ -970,8 +970,12 @@ async def sample_chunks(o, pathSamples, layers):
                     if not ch1.parents:
                         children.append(ch1)
 
-                # parent only last and first chunk, before it did this for all.
-                parent_child(parents, children, o)
+                # Use distance-based connectivity so each chunk links only to
+                # nearby neighbours (≈2 × stepover).  The old parent_child()
+                # created a complete bipartite graph (every parent ↔ every
+                # child), which caused O(n³) child-checking in sort_chunks when
+                # layers have thousands of chunks.
+                parent_child_distance(parents, children, o)
     timing_add(sortingtime)
     chunks = []
 
@@ -1093,68 +1097,194 @@ async def sort_chunks(chunks, o, last_pos=None):
     """
 
     log.info("-")
+    _t0 = time.time()
 
     if o.strategy != "WATERLINE":
         await progress_async("Sorting Paths")
-    # the getNext() function of CamPathChunk was running out of recursion limits.
     sys.setrecursionlimit(100000)
-    sortedchunks = []
-    chunks_to_resample = []
 
-    lastch = None
-    last_progress_time = time.time()
     total = len(chunks)
-    i = len(chunks)
-    stall_count = 0
+    log.info(f"sort_chunks: {total} chunks, starting sort loop")
+    last_progress_time = time.time()
     pos = (0, 0, 0) if last_pos is None else last_pos
 
-    while len(chunks) > 0:
-        if o.strategy != "WATERLINE" and time.time() - last_progress_time > 0.1:
-            await progress_async("Sorting Paths", 100.0 * (total - len(chunks)) / total)
-            last_progress_time = time.time()
-        ch = None
-        if len(sortedchunks) == 0 or len(lastch.parents) == 0:
-            # first chunk or when there are no parents -> parents come after children here...
-            ch = get_closest_chunk(o, pos, chunks)
-        elif len(lastch.parents) > 0:  # looks in parents for next candidate, recursively
-            for parent in lastch.parents:
-                ch = parent.get_next_closest(o, pos)
-                if ch is not None:
+    # --- Numpy vectorized fast path ---
+    # Same greedy nearest-neighbour algorithm as the O(n²) fallback but
+    # vectorised with numpy for ~100-500x speedup.  No scipy dependency.
+    # Handles parent/child hierarchy: a chunk is only eligible when all
+    # its children have already been sorted.
+    _has_hierarchy = any(ch.parents or ch.children for ch in chunks)
+    _used_fast = False
+    log.info(
+        f"sort_chunks: total={total}, _has_hierarchy={_has_hierarchy}, "
+        f"strategy={o.strategy}"
+    )
+    if total > 100:
+        # --- Numpy-accelerated version of the O(n²) algorithm ---
+        # Preserves the exact same logic (parent hierarchy traversal +
+        # global nearest-neighbour fallback) but replaces the slow
+        # get_closest_chunk linear scan and list.remove with numpy ops.
+        #
+        # Key optimisation: maintain unsorted_child_count incrementally
+        # so eligibility is O(1) per chunk instead of O(children) per call.
+        meander = o.movement.type == "MEANDER"
+
+        # Pre-compute start/end XY for numpy-accelerated get_closest_chunk.
+        _start_xy = np.empty((total, 2), dtype=np.float64)
+        _end_xy = np.empty((total, 2), dtype=np.float64) if meander else None
+        _chunk_idx = {}  # id(ch) → index for O(1) lookup
+        for ci, ch in enumerate(chunks):
+            _chunk_idx[id(ch)] = ci
+            pts = ch.get_points()
+            if pts:
+                _start_xy[ci] = (pts[0][0], pts[0][1])
+                if meander:
+                    _end_xy[ci] = (pts[-1][0], pts[-1][1])
+
+        _remaining = np.ones(total, dtype=bool)
+
+        # Pre-compute child counts and parent-index lists for incremental
+        # eligibility tracking.  _unsorted_children[ci] = number of
+        # unsorted children of chunk ci.  When it reaches 0 the chunk
+        # becomes eligible for selection.
+        _unsorted_children = np.zeros(total, dtype=np.int32)
+        _parent_indices = [[] for _ in range(total)]  # ci → list of parent ci's
+        for ci, ch in enumerate(chunks):
+            for child in ch.children:
+                child_ci = _chunk_idx.get(id(child))
+                if child_ci is not None:
+                    _unsorted_children[ci] += 1
+                    _parent_indices[child_ci].append(ci)
+
+        # eligible = remaining AND all children sorted
+        _eligible = _remaining & (_unsorted_children == 0)
+
+        def _np_get_closest(pos_xy):
+            """Numpy replacement for get_closest_chunk."""
+            eri = np.where(_eligible)[0]
+            if len(eri) == 0:
+                return None
+            d_start = np.sum((_start_xy[eri] - pos_xy) ** 2, axis=1)
+            if meander:
+                d_end = np.sum((_end_xy[eri] - pos_xy) ** 2, axis=1)
+                best = np.argmin(np.minimum(d_start, d_end))
+            else:
+                best = np.argmin(d_start)
+            return chunks[eri[best]]
+
+        def _mark_sorted(ch):
+            """Mark chunk sorted and update eligibility for its parents."""
+            ci = _chunk_idx[id(ch)]
+            _remaining[ci] = False
+            _eligible[ci] = False
+            for pi in _parent_indices[ci]:
+                _unsorted_children[pi] -= 1
+                if _unsorted_children[pi] == 0 and _remaining[pi]:
+                    _eligible[pi] = True
+
+        sortedchunks = []
+        lastch = None
+        stall_count = 0
+        _cur = np.array([pos[0], pos[1]], dtype=np.float64)
+
+        while _remaining.any():
+            ch = None
+            if len(sortedchunks) == 0 or len(lastch.parents) == 0:
+                ch = _np_get_closest(_cur)
+            elif len(lastch.parents) > 0:
+                for parent in lastch.parents:
+                    ch = parent.get_next_closest(o, pos)
+                    if ch is not None:
+                        break
+                if ch is None:
+                    ch = _np_get_closest(_cur)
+
+            if ch is not None:
+                if not ch.sorted:
+                    ch.adapt_distance(pos, o)
+                    ch.sorted = True
+                _mark_sorted(ch)
+                sortedchunks.append(ch)
+                lastch = ch
+                pos = lastch.get_point(-1)
+                _cur[0] = pos[0]
+                _cur[1] = pos[1]
+                stall_count = 0
+            else:
+                stall_count += 1
+                if stall_count >= int(_remaining.sum()):
+                    log.warning(
+                        f"sort_chunks: {int(_remaining.sum())} chunks "
+                        f"could not be sorted, appending as-is"
+                    )
+                    for ci in np.where(_remaining)[0]:
+                        sortedchunks.append(chunks[ci])
+                    _remaining[:] = False
                     break
-            if ch is None:
-                ch = get_closest_chunk(o, pos, chunks)
 
-        if ch is not None:  # found next chunk, append it to list
-            # only adaptdist the chunk if it has not been sorted before
-            if not ch.sorted:
-                ch.adapt_distance(pos, o)
-                ch.sorted = True
-
-            chunks.remove(ch)
-            sortedchunks.append(ch)
-            lastch = ch
-            pos = lastch.get_point(-1)
-            stall_count = 0
-        else:
-            stall_count += 1
-            if stall_count >= len(chunks):  # full pass with no progress — avoid infinite loop
-                log.warning(
-                    f"sort_chunks: {len(chunks)} chunks could not be sorted, appending as-is"
+            if o.strategy != "WATERLINE" and time.time() - last_progress_time > 0.1:
+                await progress_async(
+                    "Sorting Paths",
+                    100.0 * (total - int(_remaining.sum())) / total,
                 )
-                sortedchunks.extend(chunks)
-                break
+                last_progress_time = time.time()
 
-        i -= 1
+        _used_fast = True
+
+    if not _used_fast:
+        # --- Original O(n²) greedy nearest-neighbour loop ---
+        sortedchunks = []
+        lastch = None
+        stall_count = 0
+
+        while len(chunks) > 0:
+            if o.strategy != "WATERLINE" and time.time() - last_progress_time > 0.1:
+                await progress_async("Sorting Paths", 100.0 * (total - len(chunks)) / total)
+                last_progress_time = time.time()
+            ch = None
+            if len(sortedchunks) == 0 or len(lastch.parents) == 0:
+                ch = get_closest_chunk(o, pos, chunks)
+            elif len(lastch.parents) > 0:
+                for parent in lastch.parents:
+                    ch = parent.get_next_closest(o, pos)
+                    if ch is not None:
+                        break
+                if ch is None:
+                    ch = get_closest_chunk(o, pos, chunks)
+
+            if ch is not None:
+                if not ch.sorted:
+                    ch.adapt_distance(pos, o)
+                    ch.sorted = True
+                chunks.remove(ch)
+                sortedchunks.append(ch)
+                lastch = ch
+                pos = lastch.get_point(-1)
+                stall_count = 0
+            else:
+                stall_count += 1
+                if stall_count >= len(chunks):
+                    log.warning(
+                        f"sort_chunks: {len(chunks)} chunks could not be sorted, appending as-is"
+                    )
+                    sortedchunks.extend(chunks)
+                    break
 
     if o.strategy == "POCKET" and o.pocket_option == "OUTSIDE":
         sortedchunks.reverse()
 
     sys.setrecursionlimit(1000)
+    _method = "numpy" if _used_fast else "O(n²)"
+    log.info(
+        f"sort_chunks: sort loop done in {time.time() - _t0:.3f}s ({_method}), {len(sortedchunks)} sorted"
+    )
 
+    _t1 = time.time()
     if o.strategy != "DRILL" and o.strategy != "OUTLINEFILL":
         # THIS SHOULD AVOID ACTUALLY MOST STRATEGIES, THIS SHOULD BE DONE MANUALLY,
         # BECAUSE SOME STRATEGIES GET SORTED TWICE.
         sortedchunks = await connect_chunks_low(sortedchunks, o)
+    log.info(f"sort_chunks: connect_chunks_low done in {time.time() - _t1:.3f}s")
 
     return sortedchunks
 
@@ -1329,6 +1459,27 @@ def chunks_to_mesh(chunks, o):
     ob.location = (0, 0, 0)
     ob.color = scene.cam_machine.path_color
     o.path_object_name = path_name
+
+    # Apply an Emission material so the path is visible in Material Preview
+    # as a bright coloured line (the Solid viewport uses ob.color above).
+    _path_color = tuple(scene.cam_machine.path_color)
+    _mat_name = f"{path_name}_mat"
+    if _mat_name in bpy.data.materials:
+        _mat = bpy.data.materials[_mat_name]
+    else:
+        _mat = bpy.data.materials.new(_mat_name)
+    _mat.diffuse_color = _path_color
+    _mat.use_nodes = True
+    _nt = _mat.node_tree
+    _nt.nodes.clear()
+    _emit = _nt.nodes.new("ShaderNodeEmission")
+    _emit.inputs[0].default_value = _path_color
+    _out = _nt.nodes.new("ShaderNodeOutputMaterial")
+    _nt.links.new(_emit.outputs[0], _out.inputs[0])
+    if ob.data.materials:
+        ob.data.materials[0] = _mat
+    else:
+        ob.data.materials.append(_mat)
 
     collections = bpy.data.collections
     if "Paths" in collections:
