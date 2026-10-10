@@ -541,16 +541,18 @@ class CalculatePath(Operator, AsyncOperatorMixin):
 
         # Reuse the Text already linked to this file instead of opening a new copy,
         # otherwise every recalculation piles up name.001, name.002, ...
+        # Duplicates left by older versions are removed; large piles of them
+        # have crashed Blender 5.2 while saving.
         target = os.path.normcase(os.path.abspath(bpy.path.abspath(basefilename)))
-        gcode_text = next(
-            (
-                t
-                for t in bpy.data.texts
-                if t.filepath
-                and os.path.normcase(os.path.abspath(bpy.path.abspath(t.filepath))) == target
-            ),
-            None,
-        )
+        matches = [
+            t
+            for t in bpy.data.texts
+            if t.filepath
+            and os.path.normcase(os.path.abspath(bpy.path.abspath(t.filepath))) == target
+        ]
+        gcode_text = matches[0] if matches else None
+        for duplicate in matches[1:]:
+            bpy.data.texts.remove(duplicate)
         if gcode_text is None:
             gcode_text = bpy.data.texts.load(basefilename)
         else:
