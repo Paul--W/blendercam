@@ -3,13 +3,10 @@
 'CAM Optimisation' properties and panel in Properties > Render
 """
 
-import bpy
-
 from bpy.types import Panel
 
-from .parent_panel import CAMParentPanel
-
 from ...utilities.version_utils import opencamlib_version
+from .parent_panel import CAMParentPanel
 
 
 class CAM_OPTIMISATION_Panel(CAMParentPanel, Panel):

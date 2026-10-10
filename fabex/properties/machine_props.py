@@ -275,8 +275,7 @@ class CAM_MACHINE_Properties(PropertyGroup):
     )
     spindle_start_time: FloatProperty(
         name="Spindle Start Delay Seconds",
-        description="Wait for the spindle to start spinning before starting "
-        "the feeds , in seconds",
+        description="Wait for the spindle to start spinning before starting the feeds , in seconds",
         default=0,
         min=0.0000,
         max=320000,
@@ -362,7 +361,7 @@ class CAM_MACHINE_Properties(PropertyGroup):
 
     block_number_increment: IntProperty(
         name="Block Number Increment",
-        description="How much the block number should " "increment for the next line",
+        description="How much the block number should increment for the next line",
         default=10,
     )
 

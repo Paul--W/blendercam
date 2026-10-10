@@ -19,22 +19,21 @@ from .strategies.carve import carve
 from .strategies.circles import circles
 from .strategies.crazy import crazy
 from .strategies.cross import cross
-from .strategies.cutout import cutout
 from .strategies.curve_to_path import curve
+from .strategies.cutout import cutout
 from .strategies.drill import drill
+from .strategies.helix_4_axis import helix_four_axis
 from .strategies.medial_axis import medial_axis
 from .strategies.outline_fill import outline_fill
-from .strategies.pencil import pencil
-from .strategies.project_curve import projected_curve
-from .strategies.pocket import pocket
 from .strategies.parallel import parallel
-from .strategies.spiral import spiral
-from .strategies.waterline import waterline
 
 # 4 Axis Strategies
 from .strategies.parallel_4_axis import parallel_four_axis
-from .strategies.helix_4_axis import helix_four_axis
-
+from .strategies.pencil import pencil
+from .strategies.pocket import pocket
+from .strategies.project_curve import projected_curve
+from .strategies.spiral import spiral
+from .strategies.waterline import waterline
 from .utilities.async_utils import progress_async
 from .utilities.bounds_utils import get_bounds
 from .utilities.index_utils import (
@@ -43,10 +42,10 @@ from .utilities.index_utils import (
 )
 from .utilities.logging_utils import log
 from .utilities.operation_utils import (
+    check_memory_limit,
+    get_change_data,
     get_operation_axes,
     get_operation_sources,
-    get_change_data,
-    check_memory_limit,
 )
 from .utilities.simple_utils import (
     progress,
@@ -81,7 +80,8 @@ async def get_path(context, operation):
             auto_export.
     """
     if operation.feedrate > context.scene.cam_machine.feedrate_max:
-        raise CamException("Operation Feedrate is greater than Machine Maximum!")
+        message = "Operation Feedrate is greater than Machine Maximum!"
+        raise CamException(message)
 
     t = time.process_time()
 
@@ -98,7 +98,7 @@ async def get_path(context, operation):
     operation.update_ambient_tag = True
     operation.update_bullet_collision_tag = True
 
-    three_axis, four_axis, five_axis, indexed_four_axis, indexed_five_axis = get_operation_axes(
+    three_axis, four_axis, _five_axis, indexed_four_axis, indexed_five_axis = get_operation_axes(
         o=operation
     )
     get_operation_sources(operation)
@@ -171,7 +171,6 @@ async def get_path_3_axis(context, operation):
         the operation and context directly.
     """
 
-    s = bpy.context.scene
     o = operation
     get_bounds(o)
     tw = time.time()
@@ -197,7 +196,7 @@ async def get_path_3_axis(context, operation):
 
     await strategy_from_operation[o.strategy](o)
 
-    await progress_async(f"Done", time.time() - tw, "s")
+    await progress_async("Done", time.time() - tw, "s")
 
 
 async def get_path_4_axis(context, operation):
@@ -220,7 +219,6 @@ async def get_path_4_axis(context, operation):
             the state of the operation by processing chunks for meshing.
     """
 
-    s = bpy.context.scene
     o = operation
     get_bounds(o)
     tw = time.time()
@@ -233,4 +231,4 @@ async def get_path_4_axis(context, operation):
 
     await strategy_from_operation[o.strategy_4_axis](o)
 
-    await progress_async(f"Done", time.time() - tw, "s")
+    await progress_async("Done", time.time() - tw, "s")

@@ -1,5 +1,4 @@
-"""Fabex 'material_utils.py' © 2012 Vilem Novak
-"""
+"""Fabex 'material_utils.py' © 2012 Vilem Novak"""
 
 import bpy
 
@@ -30,7 +29,7 @@ def add_transparent_material(ob, mname, color, alpha):
     else:
         mat = bpy.data.materials.new(name=mname)
         mat.use_nodes = True
-        bsdf = mat.node_tree.nodes["Principled BSDF"]
+        mat.node_tree.nodes["Principled BSDF"]
 
         # Assign it to object
         if ob.data.materials:
@@ -54,6 +53,13 @@ def add_material_area_object():
     area of the CAM without affecting the render output.  Raises:
     None
     """
+
+    if (
+        not hasattr(scene, "cam_operations")
+        or len(scene.cam_operations) == 0
+        or scene.cam_active_operation >= len(scene.cam_operations)
+    ):
+        return
 
     s = bpy.context.scene
     operation = s.cam_operations[s.cam_active_operation]
@@ -107,5 +113,5 @@ def update_material(self, context):
         context: The context in which the material update is performed.
     """
 
-    log.info("Update Material")
+    log.info("Status: Updated Material")
     add_material_area_object()

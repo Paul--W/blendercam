@@ -28,11 +28,15 @@ def _get_preset_path(subdir):
     return paths[0] if paths else None
 
 
-##################
+#####################
 # Operation Presets #
-##################
+#####################
 operation_presets = []
-operation_preset_path = _get_preset_path("cam_operations")
+try:
+    operation_preset_path = bpy.utils.preset_paths("cam_operations")[0]
+except IndexError:
+    operation_preset_path = _get_preset_path("cam_operations")
+
 if operation_preset_path:
     operation_presets = sorted(listdir(operation_preset_path))
 
@@ -54,20 +58,16 @@ operation_types = [
 ]
 
 user_operations = [
-    operation for operation in operation_presets if not operation.startswith("  pycache")
+    operation
+    for operation in operation_presets
+    if not operation.startswith("  pycache")
+    and operation not in finishing_operations
+    and operation not in roughing_operations
 ]
-
-for operation_list in operation_types:
-    for operation in operation_list:
-        user_operations.remove(operation)
 
 
 def get_operation_list(op_type, op_types):
-    operation_list = []
-    for operation in op_types:
-        operation = operation.replace(op_type, "")
-        operation_list.append((operation, operation, ""))
-    return operation_list
+    return [(operation, operation, "") for operation in op_types]
 
 
 finishing_presets = get_operation_list("Fin", finishing_operations)
@@ -87,12 +87,12 @@ def update_operation_preset(self, context):
 
 
 def update_finishing(self, context):
-    context.scene.operation_preset = f"Fin{context.scene.finishing.replace(' ', '_')}"
+    context.scene.operation_preset = f"{context.scene.finishing.replace(' ', '_')}"
     update_operation_preset(self, context)
 
 
 def update_roughing(self, context):
-    context.scene.operation_preset = f"Rou{context.scene.roughing.replace(' ', '_')}"
+    context.scene.operation_preset = f"{context.scene.roughing.replace(' ', '_')}"
     update_operation_preset(self, context)
 
 
@@ -105,7 +105,12 @@ def update_user_operation(self, context):
 # Cutter Presets #
 ##################
 cutter_presets = []
-cutter_preset_path = _get_preset_path("cam_cutters")
+
+try:
+    cutter_preset_path = bpy.utils.preset_paths("cam_cutters")[0]
+except IndexError:
+    cutter_preset_path = _get_preset_path("cam_cutters")
+
 if cutter_preset_path:
     cutter_presets = sorted(listdir(cutter_preset_path))
 
@@ -178,7 +183,12 @@ def update_user_cutter(self, context):
 # Machine Presets #
 ###################
 machine_presets = []
-machine_preset_path = _get_preset_path("cam_machines")
+
+try:
+    machine_preset_path = bpy.utils.preset_paths("cam_machines")[0]
+except IndexError:
+    machine_preset_path = _get_preset_path("cam_machines")
+
 if machine_preset_path:
     machine_presets = sorted(listdir(machine_preset_path))
 

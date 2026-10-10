@@ -8,8 +8,6 @@ from math import pi
 
 import bpy
 import numpy as np
-from shapely.geometry import Polygon
-
 from bpy.props import (
     BoolProperty,
     EnumProperty,
@@ -20,23 +18,25 @@ from bpy.props import (
     StringProperty,
 )
 from bpy.types import Curve, PropertyGroup
+from shapely.geometry import Polygon
+
 from ..constants import PRECISION
-from ..utilities.strategy_utils import (
-    get_strategy_list,
-    update_strategy,
-    update_cutout,
-)
 from ..utilities.operation_utils import (
     operation_valid,
-    update_operation,
     update_bridges,
     update_chipload,
+    update_image_size_y,
     update_offset_image,
+    update_operation,
     update_operation_valid,
     update_rest,
     update_rotation,
     update_Z_buffer_image,
-    update_image_size_y,
+)
+from ..utilities.strategy_utils import (
+    get_strategy_list,
+    update_cutout,
+    update_strategy,
 )
 from .info_props import CAM_INFO_Properties
 from .material_props import CAM_MATERIAL_Properties
@@ -102,7 +102,7 @@ class CAM_OPERATION_Properties(PropertyGroup):
     )
     remove_redundant_points: BoolProperty(
         name="Simplify G-code",
-        description="Remove redundant points sharing the same angle" " as the start vector",
+        description="Remove redundant points sharing the same angle as the start vector",
         default=False,
     )
     simplify_tolerance: IntProperty(
@@ -245,7 +245,7 @@ class CAM_OPERATION_Properties(PropertyGroup):
     )
     array: BoolProperty(
         name="Use Array",
-        description="Create a repetitive array for producing the " "same thing many times",
+        description="Create a repetitive array for producing the same thing many times",
         default=False,
         update=update_rest,
     )
@@ -501,7 +501,7 @@ class CAM_OPERATION_Properties(PropertyGroup):
     )
     laser_delay: FloatProperty(
         name="Laser ON Delay",
-        description="Time after fast move to turn on laser and " "let machine stabilize",
+        description="Time after fast move to turn on laser and let machine stabilize",
         default=0.2,
     )
     plasma_on: StringProperty(
@@ -514,7 +514,7 @@ class CAM_OPERATION_Properties(PropertyGroup):
     )
     plasma_delay: FloatProperty(
         name="Plasma ON Delay",
-        description="Time after fast move to turn on Plasma and " "let machine stabilize",
+        description="Time after fast move to turn on Plasma and let machine stabilize",
         default=0.1,
     )
     plasma_dwell: FloatProperty(
@@ -753,7 +753,7 @@ class CAM_OPERATION_Properties(PropertyGroup):
             (
                 "OPERATIONRESULT",
                 "Rest Milling",
-                "For rest milling, operations have to be " "put in chain for this to work well.",
+                "For rest milling, operations have to be put in chain for this to work well.",
             ),
         ),
         description="Starting depth",
@@ -875,7 +875,7 @@ class CAM_OPERATION_Properties(PropertyGroup):
     )
     ambient_radius: FloatProperty(
         name="Ambient Radius",
-        description="Radius around the part which will be milled if " "ambient is set to Around",
+        description="Radius around the part which will be milled if ambient is set to Around",
         min=0.0,
         max=100.0,
         default=0.01,
@@ -890,7 +890,7 @@ class CAM_OPERATION_Properties(PropertyGroup):
         update=update_rest,
     )
     ambient_cutter_restrict: BoolProperty(
-        name="Cutter Stays in Ambient Limits",
+        name="Cutter Ambient Limit",
         description="Cutter doesn't get out from ambient limits otherwise "
         "goes on the border exactly",
         default=True,
@@ -1089,7 +1089,7 @@ class CAM_OPERATION_Properties(PropertyGroup):
     )
     add_mesh_for_medial: BoolProperty(
         name="Add Medial mesh",
-        description="Medial operation returns mesh for editing and " "further processing",
+        description="Medial operation returns mesh for editing and further processing",
         default=False,
         update=update_rest,
     )
@@ -1183,17 +1183,17 @@ class CAM_OPERATION_Properties(PropertyGroup):
 
     output_header: BoolProperty(
         name="Output G-code Header",
-        description="Output user defined G-code command header" " at start of operation",
+        description="Output user defined G-code command header at start of operation",
         default=False,
     )
     gcode_header: StringProperty(
         name="G-code Header",
-        description="G-code commands at start of operation." " Use ; for line breaks",
+        description="G-code commands at start of operation. Use ; for line breaks",
         default="G53 G0",
     )
     enable_dust: BoolProperty(
         name="Dust Collector",
-        description="Output user defined g-code command header" " at start of operation",
+        description="Output user defined g-code command header at start of operation",
         default=False,
     )
     gcode_start_dust_cmd: StringProperty(
@@ -1213,7 +1213,7 @@ class CAM_OPERATION_Properties(PropertyGroup):
     )
     gcode_start_hold_cmd: StringProperty(
         name="G-code Header",
-        description="G-code commands at start of operation." " Use ; for line breaks",
+        description="G-code commands at start of operation. Use ; for line breaks",
         default="M102",
     )
     gcode_stop_hold_cmd: StringProperty(
@@ -1238,12 +1238,12 @@ class CAM_OPERATION_Properties(PropertyGroup):
     )
     output_trailer: BoolProperty(
         name="Output G-code Trailer",
-        description="Output user defined g-code command trailer" " at end of operation",
+        description="Output user defined g-code command trailer at end of operation",
         default=False,
     )
     gcode_trailer: StringProperty(
         name="G-code Trailer",
-        description="G-code commands at end of operation." " Use ; for line breaks",
+        description="G-code commands at end of operation. Use ; for line breaks",
         default="M02",
     )
 

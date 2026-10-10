@@ -1,14 +1,10 @@
 """Fabex 'index_utils.py' © 2012 Vilem Novak"""
 
-from pathlib import Path
-
-import shapely
-
 import bpy
 
-from .simple_utils import activate
-from .orient_utils import rotation_to_2_axes
 from .logging_utils import log
+from .orient_utils import rotation_to_2_axes
+from .simple_utils import activate
 
 
 def prepare_indexed(o):

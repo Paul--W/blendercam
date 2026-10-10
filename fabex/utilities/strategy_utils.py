@@ -8,21 +8,8 @@ import json
 from math import pi
 from pathlib import Path
 
-import numpy as np
-
-_OCL_PREFS_FILE = Path(__file__).parent.parent / "_user_ocl_prefs.json"
-
-
-def _save_ocl_prefs(use_exact, use_opencamlib):
-    try:
-        _OCL_PREFS_FILE.write_text(
-            json.dumps({"use_exact": use_exact, "use_opencamlib": use_opencamlib})
-        )
-    except Exception:
-        pass
-
-
 import bpy
+import numpy as np
 from mathutils import (
     Euler,
     Vector,
@@ -42,6 +29,17 @@ from .orient_utils import (
 from .silhouette_utils import silhouette_offset
 from .simple_utils import progress
 
+_OCL_PREFS_FILE = Path(__file__).parent.parent / "_user_ocl_prefs.json"
+
+
+def _save_ocl_prefs(use_exact, use_opencamlib):
+    try:
+        _OCL_PREFS_FILE.write_text(
+            json.dumps({"use_exact": use_exact, "use_opencamlib": use_opencamlib})
+        )
+    except Exception:
+        pass
+
 
 def update_strategy(o, context):
     """Update the strategy of the given object.
@@ -60,7 +58,7 @@ def update_strategy(o, context):
 
     """"""
     o.changed = True
-    log.info("Update Strategy")
+    log.info("Status: Updated Strategy")
     if o.machine_axes == "5" or (o.machine_axes == "4" and o.strategy_4_axis == "INDEXED"):
         # INDEXED 4 AXIS DOESN'T EXIST NOW...
         add_orientation_object(o)
@@ -94,14 +92,14 @@ def update_exact(o, context):
         None: This function does not return a value.
     """
 
-    log.info("Update Exact ")
+    log.info("Status: Updated Exact Mode")
     o.changed = True
     o.update_z_buffer_image_tag = True
     o.update_offset_image_tag = True
     if o.optimisation.use_exact:
         if o.strategy == "POCKET" or o.strategy == "MEDIAL_AXIS" or o.inverse:
             o.optimisation.use_opencamlib = False
-            log.info("Current Operation Cannot Use Exact Mode")
+            log.info("Exact Mode Status: Current Operation Incompatible")
     else:
         o.optimisation.use_opencamlib = False
 
@@ -124,12 +122,12 @@ def update_opencamlib_1(o, context):
         None: This function does not return any value.
     """
 
-    log.info("Update OpenCAMLib ")
+    log.info("Status: Updated OpenCAMLib ")
     o.changed = True
     if o.optimisation.use_opencamlib and (o.strategy == "POCKET" or o.strategy == "MEDIAL_AXIS"):
         o.optimisation.use_exact = False
         o.optimisation.use_opencamlib = False
-        log.info("Current Operation Cannot Use OpenCAMLib")
+        log.info("OpenCAMLib Status: Current Operation Incompatible")
 
 
 def get_strategy_list(scene, context):
@@ -190,6 +188,13 @@ def get_strategy_list(scene, context):
             fabex_icons["CrossIcon"].icon_id,  #  "ADD",
             4,
         ),
+        # (
+        #     "PENCIL",
+        #     "Pencil",
+        #     "Pencil path",
+        #     "GREASEPENCIL",
+        #     5,
+        # ),
         (
             "BLOCK",
             "Block",
@@ -392,7 +397,7 @@ def parallel_pattern(o, angle):
     e = Euler((0, 0, angle))
     reverse = False
 
-    climb_CW, climb_CCW, conventional_CW, conventional_CCW = get_move_and_spin(o)
+    _climb_CW, climb_CCW, conventional_CW, _conventional_CCW = get_move_and_spin(o)
     meander_reverse = reverse and o.movement.type == "MEANDER"
     step_back_reverse = reverse and o.movement.parallel_step_back
 
@@ -463,7 +468,7 @@ def parallel_pattern(o, angle):
         progress(axis_along_paths)
         chunks = []
 
-        for a in range(0, len(axis_across_paths[0])):
+        for a in range(len(axis_across_paths[0])):
             nax = axis_along_paths.copy()
             nax[0] += axis_across_paths[0][a]
             nax[1] += axis_across_paths[1][a]
