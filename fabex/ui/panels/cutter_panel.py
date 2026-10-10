@@ -120,6 +120,21 @@ class CAM_CUTTER_Panel(CAMParentPanel, Panel):
             if self.op.cutter_type not in ["LASER", "PLASMA"]:
                 col.prop(self.op, "cutter_flutes", text="Flutes")
 
+        # Cutter Length (stick-out) and Shank Diameter
+        # Only shown when at least one auto-calc toggle is enabled
+        if self.level >= 1:
+            if self.op.cutter_type not in ["LASER", "PLASMA"]:
+                m = bpy.context.scene.cam_machine
+                any_auto = (
+                    m.auto_calc_stepover
+                    or m.auto_calc_layer_height
+                    or m.auto_calc_rpm
+                    or m.auto_calc_feedrate
+                )
+                if any_auto:
+                    col.prop(self.op, "cutter_length", text="Stick-out")
+                    col.prop(self.op, "shank_diameter", text="Shank Diameter")
+
         # Cutter ID
         if self.level >= 2:
             col = box.column(align=True)
@@ -168,7 +183,7 @@ class CAM_CUTTER_Panel(CAMParentPanel, Panel):
             # Warns if cutter engagement is greater than 50%
             if self.op.cutter_type in ["BALLCONE"]:
                 engagement = round(
-                    100 * self.op.distance_between_paths / self.op.ball_radius,
+                    100 * self.op.distance_between_paths / (self.op.ball_radius * 2),
                     1,
                 )
             else:

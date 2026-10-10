@@ -11,6 +11,7 @@ import bpy
 from .constants import USE_PROFILER
 from .exception import CamException
 from .gcode.gcode_export import export_gcode_path
+from .strategies.rest_machining import rest_export_gcode_path
 
 # 3 Axis Strategies
 from .strategies.block import block
@@ -134,7 +135,11 @@ async def get_path(context, operation):
         p = bpy.data.objects[path_name]
         name_raw = operation.name if operation.link_operation_file_names else operation.filename
         name = safe_filename(name_raw)
-        export_gcode_path(name, [p.data], [operation])
+        mesh = p.data
+        if operation.use_rest_machining and "rapid" in mesh.attributes:
+            rest_export_gcode_path(name, [mesh], [operation])
+        else:
+            export_gcode_path(name, [mesh], [operation])
 
     operation.changed = False
     t1 = time.process_time() - t

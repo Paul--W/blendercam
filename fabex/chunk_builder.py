@@ -214,29 +214,29 @@ class CamPathChunk:
 
     def get_next_closest(self, o, pos):
         # finds closest chunk that can be milled, when inside sorting hierarchy.
+        # Uses a separate set for O(1) visited lookup so each node is processed
+        # at most once.  The original code aliased testlist = tested (same list
+        # object), so pop() removed items from 'tested', allowing nodes to be
+        # re-queued and visited repeatedly — O(n²) BFS per sort step.
         mind = 100000000000
         self.cango = False
-        closest = None
-        testlist = tested = [child for child in self.children]
         ch = None
 
-        while len(testlist) > 0:
+        testlist = list(self.children)
+        tested = set(id(c) for c in self.children)
+
+        while testlist:
             chtest = testlist.pop()
 
             if not chtest.sorted:
                 self.cango = False
                 cango = True
 
-                [
-                    testlist.append(child)
-                    for child in chtest.children
-                    if not child.sorted and child not in tested
-                ]
-                [
-                    tested.append(child)
-                    for child in chtest.children
-                    if not child.sorted and child not in tested
-                ]
+                for child in chtest.children:
+                    cid = id(child)
+                    if not child.sorted and cid not in tested:
+                        testlist.append(child)
+                        tested.add(cid)
 
                 for child in chtest.children:
                     if not child.sorted:
@@ -244,12 +244,11 @@ class CamPathChunk:
 
                 if cango:
                     d = chtest.distance(pos, o)
-
                     if d < mind:
                         ch = chtest
                         mind = d
 
-        return ch if ch is not None else None
+        return ch
 
     def get_length(self):
         # computes length of the chunk - in 3d

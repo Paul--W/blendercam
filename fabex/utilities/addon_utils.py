@@ -8,6 +8,7 @@ import sys
 import bpy
 from bpy.app.handlers import persistent
 
+from .custom_settings_utils import load_custom_settings
 from .logging_utils import log
 
 from ..constants import _IS_LOADING_DEFAULTS
@@ -154,6 +155,7 @@ def copy_presets(addon_prefs):
         addon_prefs.op_preset_update = True
 
 
+
 @bpy.app.handlers.persistent
 def on_blender_startup(context):
     """Checks for any broken computations on load and resets them.
@@ -219,6 +221,8 @@ def on_blender_startup(context):
         log.debug("Collections Added to Scene")
         load_defaults(addon_prefs)
         log.debug("Loading Fabex Settings")
+
+        load_custom_settings()
 
         log.debug("Fabex Activated")
 

@@ -416,11 +416,22 @@ class CAM_OPERATION_Properties(PropertyGroup):
         update=update_offset_image,
     )
     cutter_length: FloatProperty(
-        name="#Cutter Length",
-        description="#not supported#Cutter length",
+        name="Cutter Length",
+        description="Tool stick-out length — used for deflection/chatter estimation",
         min=0.0,
-        max=100.0,
-        default=25.0,
+        max=0.1524,
+        default=0.0254,
+        precision=PRECISION,
+        unit="LENGTH",
+        update=update_offset_image,
+    )
+    shank_diameter: FloatProperty(
+        name="Shank Diameter",
+        description="Shank diameter — used for deflection calculation. "
+        "Set to match cutter diameter for straight end mills",
+        min=0.000001,
+        max=0.1,
+        default=0.003175,
         precision=PRECISION,
         unit="LENGTH",
         update=update_offset_image,
@@ -941,6 +952,18 @@ class CAM_OPERATION_Properties(PropertyGroup):
         precision=PRECISION,
         unit="LENGTH",
         update=update_rest,
+    )
+    rest_create_diagnostic_images: BoolProperty(
+        name="Create Rest Diagnostic Images",
+        description="Generate Z-map and heatmap diagnostic images in the logs folder "
+        "for visualising rest machining coverage",
+        default=False,
+    )
+    rest_verbose_logging: BoolProperty(
+        name="Verbose Logging",
+        description="Log detailed per-layer and per-island information during "
+        "rest machining path calculation",
+        default=False,
     )
 
     #########

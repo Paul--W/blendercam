@@ -304,13 +304,13 @@ class CAM_OPERATION_PROPERTIES_Panel(CAMParentPanel, Panel):
                 col.use_property_split = True
                 col.prop(self.op, "rest_machining_operation", text="Prior Op")
                 col.prop(self.op, "rest_layer_height", text="Layer Height")
-                final_lh = self.op.rest_final_layer_height
-                col.prop(
-                    self.op,
-                    "rest_final_layer_height",
-                    text=f"Final Layer Height {'(= Layer Height)' if final_lh <= 0 else ''}",
-                )
-                col.prop(self.op, "rest_terrain_clearance", text="Terrain Clearance")
+                # TODO: Terrain-aware rapids — use rest_terrain_clearance
+                # to fly just above the stock surface between cuts instead
+                # of retracting to full safe height.  The _build_rest_path
+                # function has prototype code for this but is not currently
+                # called.  Requires integrating terrain Z lookup into
+                # chunks_to_mesh or a post-processing step.
+
                 if self.op.use_rest_machining:
                     if self.op.rest_machining_operation == "NONE":
                         box = col.box()

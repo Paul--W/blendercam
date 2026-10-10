@@ -123,12 +123,14 @@ class CAM_AREA_Panel(CAMParentPanel, Panel):
                     col.use_property_split = True
                     col.prop_search(self.op, "limit_curve", bpy.data, "curves", text="Curve")
 
-        # Use Layers
+        # Use Layers — disabled when Rest Machining is active (it manages its own layers)
+        rest_active = getattr(self.op, "use_rest_machining", False)
         main.use_property_split = False
         header, panel = main.panel("layers", default_closed=False)
+        header.enabled = not rest_active
         header.prop(self.op, "use_layers", text="Layers")
         if panel:
-            panel.enabled = self.op.use_layers
+            panel.enabled = self.op.use_layers and not rest_active
             col = panel.column(align=True)
             col.use_property_split = True
             col.prop(self.op, "stepdown", text="Layer Height")

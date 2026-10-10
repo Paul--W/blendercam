@@ -163,7 +163,7 @@ def export_gcode_path(filename, vertslist, operations):
         c.program_begin(0, filename)
         c.flush_nc()
         c.comment("G-code Generated with Fabex and NC library")
-        frf = round(m.feedrate_rapid * unitcorr, 2)
+        frf = round(m.feedrate_rapid, 2)
         c.comment(f"Rapids: {frf}/min")
         # absolute coordinates
         c.absolute()
@@ -227,13 +227,14 @@ def export_gcode_path(filename, vertslist, operations):
         fmh = round(free_height * unitcorr, 2)
 
         if o.cutter_type not in ["LASER", "PLASMA"]:
-            frf = round(m.feedrate_rapid * unitcorr, 2)
+            frf = round(m.feedrate_rapid, 2)
 
             # Raise Z to job start height BEFORE spindle starts,
             # so the cutter clears toolsetters and fixtures
             if m.use_job_start_height:
-                jsh = round(m.job_start_height * unitcorr, 2)
+                jsh = round(m.job_start_height, 2)
                 c.write(f"G00 Z{jsh} F{frf}\n")
+                c.z = jsh  # sync post-processor Z tracking
 
             if o.enable_hold:
                 c.write("(Hold Down)\n")
@@ -270,6 +271,7 @@ def export_gcode_path(filename, vertslist, operations):
         # vertex already positions X, Y and Z, so this move is redundant.
         if o.cutter_type not in ["LASER", "PLASMA"] and not m.use_job_start_height:
             c.write(f"G00 Z{fmh} F{frf}\n")
+            c.z = fmh  # sync post-processor Z tracking (prevents None crash)
 
         if o.enable_a_axis:
             if o.rotation_a == 0:
@@ -286,11 +288,13 @@ def export_gcode_path(filename, vertslist, operations):
 
         m = bpy.context.scene.cam_machine
 
-        millfeedrate = min(o.feedrate, m.feedrate_max)
-
-        millfeedrate = unitcorr * max(millfeedrate, m.feedrate_min)
+        # o.feedrate has unit="LENGTH" (stored in metres), convert to user units.
+        # Machine feedrate_min/max store raw user-unit values (no unit="LENGTH").
+        op_feedrate = o.feedrate * unitcorr
+        millfeedrate = min(op_feedrate, m.feedrate_max)
+        millfeedrate = max(millfeedrate, m.feedrate_min)
         plungefeedrate = millfeedrate * o.plunge_feedrate / 100
-        freefeedrate = m.feedrate_max * unitcorr
+        freefeedrate = m.feedrate_max
         fadjust = False
         if (
             o.do_simulation_feedrate

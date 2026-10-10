@@ -64,17 +64,24 @@ class CamOperationAdd(Operator):
             self.report({"ERROR_INVALID_INPUT"}, "Please Add an Object to Base the Operation on.")
             return {"CANCELLED"}
 
-        # If the active object is a generated CAM path, find the original source mesh
-        # so the new operation name and properties are based on the real geometry
+        # If the active object is a generated CAM path, swap in the original
+        # source mesh so the new operation is seeded from real geometry.
+        # Only OBJECT-source ops carry a usable source mesh; for COLLECTION /
+        # IMAGE sources, or when the source mesh is gone, abort and ask the
+        # user to select a real mesh.
         path_prefix = s.cam_names.path_prefix
         if ob.name.startswith(path_prefix):
             source_ob = None
             for existing_op in s.cam_operations:
                 if existing_op.path_object_name == ob.name:
-                    if existing_op.object_name and existing_op.object_name in bpy.data.objects:
+                    if (
+                        existing_op.geometry_source == "OBJECT"
+                        and existing_op.object_name
+                        and existing_op.object_name in bpy.data.objects
+                    ):
                         source_ob = bpy.data.objects[existing_op.object_name]
-                        break
-            if source_ob:
+                    break
+            if source_ob is not None:
                 log.warning(
                     f"Active object '{ob.name}' is a CAM path - "
                     f"using source mesh '{source_ob.name}' instead."
@@ -82,10 +89,8 @@ class CamOperationAdd(Operator):
                 ob = source_ob
                 bpy.context.view_layer.objects.active = ob
             else:
-                log.warning(
-                    f"Active object '{ob.name}' appears to be a CAM path object. "
-                    "Could not find the original source mesh."
-                )
+                self.report({"ERROR_INVALID_INPUT"}, "Select a mesh object first")
+                return {"CANCELLED"}
 
         minx, miny, minz, maxx, maxy, maxz = get_bounds_worldspace([ob])
         s.cam_operations.add()
@@ -101,6 +106,53 @@ class CamOperationAdd(Operator):
 
         o.name = s.cam_names.operation_name_full
         o.filename = s.cam_names.file_name_full
+
+        # Apply machine Custom Settings defaults AFTER the preset finishes.
+        # Presets call cam_operation_add() first, then set their values.
+        # A deferred timer ensures our defaults override the preset's values
+        # for settings we want controlled by the machine, not the preset.
+        def _apply_machine_defaults():
+            try:
+                m = bpy.context.scene.cam_machine
+                op = bpy.context.scene.cam_operations[
+                    bpy.context.scene.cam_active_operation
+                ]
+                op.optimisation.use_exact = m.default_exact_mode
+                op.optimisation.use_opencamlib = m.default_use_opencamlib
+                op.use_modifiers = m.default_use_modifiers
+                op.optimisation.optimize = m.default_reduce_path_points
+                op.optimisation.optimize_threshold = m.default_path_threshold
+                # default_safe_height has no unit="LENGTH" — it's in display
+                # units (inches or mm).  free_height has unit="LENGTH" so
+                # Blender stores it in metres.  Convert before assigning.
+                if m.unit_system == "INCHES":
+                    op.movement.free_height = m.default_safe_height * 0.0254
+                else:
+                    op.movement.free_height = m.default_safe_height * 0.001
+                op.movement.useG64 = m.use_g64_trajectory
+                op.movement.G64 = m.g64_tolerance
+
+                # Default rest machining prior op to the previous operation
+                # (the one just before this new one in the list).
+                s = bpy.context.scene
+                op_idx = s.cam_active_operation
+                if op_idx > 0:
+                    prev_op = s.cam_operations[op_idx - 1]
+                    if prev_op.path_object_name and prev_op.path_object_name in bpy.data.objects:
+                        op.rest_machining_operation = prev_op.name
+
+                log.info(
+                    f"[New Op] Applied defaults: reduce_pts={m.default_reduce_path_points}, "
+                    f"threshold={m.default_path_threshold}, "
+                    f"safe_height={m.default_safe_height * 1000:.1f}mm, "
+                    f"G64={m.use_g64_trajectory}, "
+                    f"prior_op={op.rest_machining_operation}"
+                )
+            except Exception as e:
+                log.warning(f"[New Op] Failed to apply defaults: {e}")
+            return None  # don't repeat timer
+
+        bpy.app.timers.register(_apply_machine_defaults, first_interval=0.1)
 
         if s.objects.get("CAM_Machine") is None:
             add_machine_area_object()

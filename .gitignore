@@ -29,3 +29,17 @@ forceSyncWithUpstream
 __pycache__/
 # profiler output files
 *.prof
+# --- Dev environment / tooling (added 2026-10-09) ---
+.venv/
+.claude/
+.mcp.json
+CLAUDE.md
+entities.json
+mempalace.yaml
+fabex/MemPalace/
+# user runtime pref files written by the addon
+fabex/_user_*.json
+# loose test models dropped in the addon root
+fabex/*.stl
+# code-review exports
+fabex_code_review_unified.*

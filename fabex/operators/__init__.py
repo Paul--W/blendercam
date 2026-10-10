@@ -7,6 +7,7 @@ import bpy
 
 from .bas_relief_ops import DoBasRelief, ProblemAreas
 from .bridges_op import CamBridgesAdd
+from .calc_ops import FABEX_OT_copy_calc_details
 from .chain_ops import (
     CamChainAdd,
     CamChainOperationAdd,
@@ -76,6 +77,7 @@ classes = [
     DoBasRelief,
     ProblemAreas,
     CamBridgesAdd,
+    FABEX_OT_copy_calc_details,
     CamChainAdd,
     CamChainOperationAdd,
     CamChainOperationDown,

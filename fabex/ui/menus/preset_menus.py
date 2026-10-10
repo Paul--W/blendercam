@@ -10,6 +10,7 @@ import bpy
 from bpy.types import Menu
 
 from ... import __package__ as base_package
+from ...utilities.custom_settings_utils import load_custom_settings
 
 _OCL_PREFS_FILE = Path(__file__).parent.parent.parent / "_user_ocl_prefs.json"
 _remembered = {"use_exact": True, "use_opencamlib": False}
@@ -95,6 +96,8 @@ class CAM_MACHINE_MT_presets(Menu):
         addon_prefs = context.preferences.addons[base_package].preferences
         addon_prefs.default_machine_preset = filepath
         bpy.ops.wm.save_userpref()
+        # Re-apply Custom Settings so they override preset values
+        load_custom_settings()
 
     def draw(self, context):
         scene = context.scene

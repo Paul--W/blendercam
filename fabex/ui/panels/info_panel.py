@@ -76,7 +76,7 @@ class CAM_INFO_Panel(CAMParentPanel, Panel):
                 # Warns if cutter engagement is greater than 50%
                 if self.op.cutter_type in ["BALLCONE"]:
                     engagement = round(
-                        100 * self.op.distance_between_paths / self.op.ball_radius, 1
+                        100 * self.op.distance_between_paths / (self.op.ball_radius * 2), 1
                     )
                 else:
                     engagement = round(

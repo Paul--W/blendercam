@@ -31,6 +31,7 @@ from .. import __package__ as base_package
 from ..constants import was_hidden_dict
 from ..exception import CamException
 from ..gcode.gcode_export import export_gcode_path
+from ..strategies.rest_machining import rest_export_gcode_path
 from ..toolpath import get_path
 
 from ..utilities.async_utils import progress_async
@@ -345,14 +346,9 @@ async def _calc_path(operator, context):
     if o.use_rest_machining:
         prior_name = o.rest_machining_operation or "None"
         prior_op = s.cam_operations.get(prior_name) if prior_name != "None" else None
-        final_lh = (
-            o.rest_final_layer_height if o.rest_final_layer_height > 0 else o.rest_layer_height
-        )
         log.info(f"Rest Machining = Enabled (Parallel strategy only)")
         log.info(f"Prior Operation = {prior_name}")
         log.info(f"Layer Height = {o.rest_layer_height * 1000:.3f} mm")
-        log.info(f"Final Layer Height = {final_lh * 1000:.3f} mm")
-        log.info(f"Terrain Clearance = {o.rest_terrain_clearance * 1000:.3f} mm")
         if prior_op is not None:
             log.info(
                 f"Prior Op Cutter = {prior_op.cutter_type} "
@@ -477,15 +473,6 @@ async def _calc_path(operator, context):
     try:
         await get_path(context, o)
         log.info("Got Path Okay")
-
-        # Restore source mesh as active object so that adding a new operation
-        # auto-picks the source mesh rather than the generated CAM path
-        if o.geometry_source == "OBJECT" and o.object_name in bpy.data.objects:
-            source_ob = bpy.data.objects[o.object_name]
-            bpy.ops.object.select_all(action="DESELECT")
-            source_ob.select_set(True)
-            bpy.context.view_layer.objects.active = source_ob
-            log.info(f"Restored active object to source mesh: {o.object_name}")
 
     except CamException as e:
         log.error(e)
@@ -849,6 +836,10 @@ class PathExport(Operator):
 
         log.info(f"EXPORTING {name} {bpy.data.objects[path_name].data} {operation}")
 
-        export_gcode_path(name, [bpy.data.objects[path_name].data], [operation])
+        mesh = bpy.data.objects[path_name].data
+        if operation.use_rest_machining and "rapid" in mesh.attributes:
+            rest_export_gcode_path(name, [mesh], [operation])
+        else:
+            export_gcode_path(name, [mesh], [operation])
 
         return {"FINISHED"}

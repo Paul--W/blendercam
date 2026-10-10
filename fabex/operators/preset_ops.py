@@ -26,8 +26,12 @@ class AddPresetCamCutter(AddPresetBase, Operator):
         "d.cutter_type",
         "d.cutter_diameter",
         "d.cutter_length",
+        "d.shank_diameter",
         "d.cutter_flutes",
         "d.cutter_tip_angle",
+        "d.ball_radius",
+        "d.bull_corner_radius",
+        "d.cylcone_diameter",
         "d.cutter_description",
     ]
 
@@ -75,8 +79,8 @@ class AddPresetCamOperation(AddPresetBase, Operator):
         "o.source_image_crop_end_x",
         "o.source_image_crop_end_y",
         "o.source_image_scale_z",
-        "o.optimisation.optimize",
-        "o.optimisation.optimize_threshold",
+        # optimize and optimize_threshold are NOT saved in presets —
+        # they come from machine Custom Settings defaults instead.
         "o.optimisation.use_exact",
         "o.optimisation.exact_subdivide_edges",
         "o.optimisation.simulation_detail",
@@ -157,6 +161,7 @@ class AddPresetCamMachine(AddPresetBase, Operator):
         "d.feedrate_min",
         "d.feedrate_max",
         "d.feedrate_default",
+        "d.feedrate_rapid",
         "d.spindle_min",
         "d.spindle_max",
         "d.spindle_default",
@@ -167,6 +172,29 @@ class AddPresetCamMachine(AddPresetBase, Operator):
         "d.output_block_numbers",
         "d.output_tool_definitions",
         "d.output_G43_on_tool_change",
+        # Custom Settings
+        "d.use_job_start_height",
+        "d.job_start_height",
+        "d.use_rapids",
+        "d.show_rest_machining",
+        "d.default_safe_height",
+        "d.use_g64_trajectory",
+        "d.g64_tolerance",
+        "d.stock_material",
+        "d.machine_stiffness",
+        "d.spindle_power_watts",
+        "d.auto_calc_stepover",
+        "d.auto_calc_layer_height",
+        "d.auto_calc_rpm",
+        "d.auto_calc_feedrate",
+        "d.surface_finish_quality",
+        "d.tool_material",
+        "d.plunge_rate_factor",
+        "d.default_exact_mode",
+        "d.default_use_opencamlib",
+        "d.default_use_modifiers",
+        "d.default_reduce_path_points",
+        "d.default_path_threshold",
     ]
 
     preset_subdir = "cam_machines"

@@ -14,10 +14,20 @@ from bpy.props import (
 from bpy.types import PropertyGroup
 
 from ..constants import PRECISION
+from ..utilities.custom_settings_utils import (
+    save_custom_settings,
+    save_custom_settings_and_recalc,
+)
 from ..utilities.machine_utils import (
     update_machine,
     update_unit_system,
 )
+
+
+def _update_machine_and_save(self, context):
+    """Chain update_machine + save_custom_settings for Job Start Height."""
+    update_machine(self, context)
+    save_custom_settings(self, context)
 
 
 class CAM_MACHINE_Properties(PropertyGroup):
@@ -179,11 +189,11 @@ class CAM_MACHINE_Properties(PropertyGroup):
         update=update_machine,
     )
     use_job_start_height: BoolProperty(
-        name="Use Job Start Height",
+        name="Use Job Start Height (Machine Z)",
         description="Raise Z to a safe height before any XY move at job start, "
         "guaranteeing clearance over toolsetters and fixtures",
         default=False,
-        update=update_machine,
+        update=_update_machine_and_save,
     )
     job_start_height: FloatProperty(
         name="Job Start Height",
@@ -192,9 +202,8 @@ class CAM_MACHINE_Properties(PropertyGroup):
         default=0.05,
         min=0.0,
         max=10.0,
-        precision=PRECISION,
-        unit="LENGTH",
-        update=update_machine,
+        precision=3,
+        update=_update_machine_and_save,
     )
     working_area: FloatVectorProperty(
         name="Work Area",
@@ -209,24 +218,21 @@ class CAM_MACHINE_Properties(PropertyGroup):
         default=0.0,
         min=0.00001,
         max=320000,
-        precision=PRECISION,
-        unit="LENGTH",
+        precision=0,
     )
     feedrate_max: FloatProperty(
         name="Feedrate Maximum /min",
         default=2,
         min=0.00001,
         max=320000,
-        precision=PRECISION,
-        unit="LENGTH",
+        precision=0,
     )
     feedrate_default: FloatProperty(
         name="Feedrate Default /min",
         default=1.5,
         min=0.00001,
         max=320000,
-        precision=PRECISION,
-        unit="LENGTH",
+        precision=0,
     )
     feedrate_rapid: FloatProperty(
         name="Rapids /min",
@@ -235,8 +241,8 @@ class CAM_MACHINE_Properties(PropertyGroup):
         default=5.0,
         min=0.00001,
         max=320000,
-        precision=PRECISION,
-        unit="LENGTH",
+        precision=0,
+        update=save_custom_settings,
     )
     hourly_rate: FloatProperty(
         name="Price per Hour",
@@ -376,4 +382,218 @@ class CAM_MACHINE_Properties(PropertyGroup):
         name="Output G43 on Tool Change",
         description="Output G43 on tool change line",
         default=False,
+    )
+
+    # ── Custom Settings ──────────────────────────────────────────────
+
+    # Path Control
+    use_rapids: BoolProperty(
+        name="Use Rapids",
+        description="Enable G0 rapid moves in generated G-code",
+        default=True,
+        update=save_custom_settings,
+    )
+    show_rest_machining: BoolProperty(
+        name="Show Rest Machining",
+        description="Show the rest machining option in operation panels",
+        default=False,
+        update=save_custom_settings,
+    )
+    default_safe_height: FloatProperty(
+        name="Default Safe Height",
+        description="Default safe retract height for new operations",
+        default=0.05,
+        min=0.0,
+        max=1.0,
+        precision=3,
+        update=save_custom_settings,
+    )
+    use_g64_trajectory: BoolProperty(
+        name="G64 Trajectory",
+        description="Output G64 continuous path mode for smoother motion",
+        default=False,
+        update=save_custom_settings,
+    )
+    g64_tolerance: FloatProperty(
+        name="G64 Tolerance",
+        description="Path blending tolerance for G64 (P value). "
+        "Smaller = more accurate, larger = smoother motion",
+        default=0.0001,
+        min=0.000001,
+        max=0.01,
+        precision=PRECISION,
+        update=save_custom_settings,
+    )
+
+    # Stock Material & Machine
+    stock_material: EnumProperty(
+        name="Stock Material",
+        items=(
+            ("SOFTWOOD", "Softwood", "Pine, cedar, balsa, etc."),
+            ("HARDWOOD", "Hardwood", "Oak, maple, walnut, cherry, etc."),
+            ("SOFT_PLASTICS", "Soft Plastics", "HDPE, nylon, UHMW, etc."),
+            ("HARD_PLASTICS", "Hard Plastics", "Acrylic, polycarbonate, Delrin, etc."),
+            ("ALUMINIUM_CAST", "Aluminium (Cast)", "Cast aluminium alloys"),
+            ("ALUMINIUM_6061", "Aluminium (6061)", "6061-T6 and similar wrought alloys"),
+            ("ALUMINIUM_7075", "Aluminium (7075)", "7075-T6 and similar high-strength alloys"),
+            ("BRASS_SOFT", "Brass (Soft)", "Free-cutting brass, 360 alloy"),
+            ("BRASS_MEDIUM", "Brass (Medium)", "Yellow brass, cartridge brass"),
+            ("BRASS_HARD", "Brass (Hard)", "Naval brass, high-strength alloys"),
+            ("BRONZE", "Bronze", "Bronze alloys"),
+            ("CARBON_STEEL", "Carbon Steel", "Mild and carbon steel"),
+            ("STAINLESS_303", "Stainless (303)", "Free-machining stainless steel"),
+            ("STAINLESS_304", "Stainless (304)", "General-purpose stainless steel"),
+            ("STAINLESS_316", "Stainless (316)", "Marine-grade stainless steel"),
+            ("TOOL_STEEL", "Tool Steel", "Hardened tool and die steel"),
+        ),
+        description="Stock material — used for calculating optimal cutting parameters",
+        default="HARDWOOD",
+        update=save_custom_settings_and_recalc,
+    )
+    machine_stiffness: IntProperty(
+        name="Machine Stiffness",
+        description="Machine rigidity on a scale of 1-10. "
+        "1 = very flexible (engraving machine), "
+        "10 = very rigid (can mill steel at high feedrates without chatter)",
+        default=5,
+        min=1,
+        max=10,
+        update=save_custom_settings_and_recalc,
+    )
+
+    # Machine Power
+    spindle_power_watts: FloatProperty(
+        name="Spindle Power (watts)",
+        description="Rated spindle power in watts. Used for power warning when "
+        "calculated cutting power exceeds machine capability. "
+        "Common: 800W (small router), 1500W (mid), 2200W (large)",
+        default=800,
+        min=50,
+        max=50000,
+        precision=0,
+        update=save_custom_settings_and_recalc,
+    )
+
+    # Auto-Calculate
+    auto_calc_stepover: BoolProperty(
+        name="Auto Stepover",
+        description="Automatically calculate optimal stepover when a tool is chosen or edited",
+        default=False,
+        update=save_custom_settings_and_recalc,
+    )
+    auto_calc_layer_height: BoolProperty(
+        name="Auto Layer Height",
+        description="Automatically calculate optimal layer height when a tool is chosen or edited",
+        default=False,
+        update=save_custom_settings_and_recalc,
+    )
+    auto_calc_rpm: BoolProperty(
+        name="Auto RPM",
+        description="Automatically calculate optimal spindle RPM from surface speed tables "
+        "based on material and tool material. Clamped to spindle min/max",
+        default=False,
+        update=save_custom_settings_and_recalc,
+    )
+    auto_calc_feedrate: BoolProperty(
+        name="Auto Feedrate",
+        description="Automatically calculate optimal feedrate from chip load, flutes, "
+        "and RPM with chip thinning compensation",
+        default=False,
+        update=save_custom_settings_and_recalc,
+    )
+    surface_finish_quality: EnumProperty(
+        name="Surface Finish",
+        items=(
+            ("FINE", "Fine", "Scallop height 0.0001\" (2.5 μm) — best surface finish"),
+            ("STANDARD", "Standard", "Scallop height 0.0005\" (12.7 μm) — good balance"),
+            ("DRAFT", "Draft", "Scallop height 0.001\" (25.4 μm) — faster machining"),
+        ),
+        description="Surface finish quality preset — sets scallop height for ball nose stepover calculation",
+        default="STANDARD",
+        update=save_custom_settings_and_recalc,
+    )
+    tool_material: EnumProperty(
+        name="Tool Material",
+        items=(
+            ("HSS", "HSS", "High Speed Steel — lower surface speeds, more forgiving"),
+            ("CARBIDE", "Carbide", "Tungsten Carbide — higher surface speeds, more rigid"),
+        ),
+        description="Tool material — determines surface speed for RPM calculation",
+        default="CARBIDE",
+        update=save_custom_settings_and_recalc,
+    )
+    plunge_rate_factor: FloatProperty(
+        name="Plunge Rate Factor",
+        description="Plunge feed = horizontal feed × this factor. "
+        "Plunge engages only the tip, so typically 50% of horizontal feed",
+        default=0.5,
+        min=0.1,
+        max=1.0,
+        precision=2,
+        update=save_custom_settings_and_recalc,
+    )
+
+    # Operation Defaults
+    default_exact_mode: BoolProperty(
+        name="Exact Mode",
+        description="Default value for 'Use Exact Mode' on new operations",
+        default=True,
+        update=save_custom_settings,
+    )
+    default_use_opencamlib: BoolProperty(
+        name="Use OpenCamLib",
+        description="Default value for 'Use OpenCamLib' on new operations",
+        default=False,
+        update=save_custom_settings,
+    )
+    default_use_modifiers: BoolProperty(
+        name="Use Mesh Modifiers",
+        description="Default value for 'Use Mesh Modifiers' on new operations",
+        default=True,
+        update=save_custom_settings,
+    )
+    default_reduce_path_points: BoolProperty(
+        name="Reduce Path Points",
+        description="Default value for 'Reduce Path Points' on new operations",
+        default=True,
+        update=save_custom_settings,
+    )
+    default_path_threshold: FloatProperty(
+        name="Reduction Threshold (μm)",
+        description="Default path point reduction threshold for new operations. "
+        "Example: 2.54 μm = 0.00254 mm = 0.0001\"",
+        default=0.2,
+        min=0.000000001,
+        max=1000,
+        precision=20,
+        update=save_custom_settings,
+    )
+
+    # Terrain-Aware Rapids (experimental)
+    terrain_aware_rapids: BoolProperty(
+        name="Terrain Aware Rapids",
+        description="Experimental: fly just above stock surface between cuts "
+        "instead of retracting to full safe height. Uses Z-map from roughing "
+        "pass to determine terrain height. Only affects rest machining",
+        default=False,
+        update=save_custom_settings,
+    )
+    terrain_clearance: FloatProperty(
+        name="Terrain Clearance (mm)",
+        description="Height above stock surface for terrain-aware rapid traverses. "
+        "Applied on top of the dilated (worst-case) Z-map surface",
+        default=3.0,
+        min=2.0,
+        max=20.0,
+        precision=1,
+        update=save_custom_settings,
+    )
+
+    # Debugging
+    verbose_logging: BoolProperty(
+        name="Verbose Logging",
+        description="Log detailed per-layer and per-island information during "
+        "rest machining path calculation",
+        default=False,
+        update=save_custom_settings,
     )

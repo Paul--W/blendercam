@@ -34,6 +34,7 @@ from .simple_utils import (
 
 from .. import __package__ as base_package
 from ..constants import was_hidden_dict
+from ..exception import CamException
 
 
 def get_operation_sources(o):
@@ -357,6 +358,14 @@ def update_chipload(self, context):
     log.info(f"Chipload: {o.info.chipload}")
     log.info(f"Chipload per Tooth: {o.info.chipload_per_tooth}")
 
+    # Update Calculation Details display cache and warnings
+    try:
+        machine = context.scene.cam_machine
+        from .cutting_params import auto_calculate_for_operation
+        auto_calculate_for_operation(self, machine)
+    except Exception as e:
+        log.warning(f"[update_chipload] auto_calculate failed: {e}")
+
 
 def update_offset_image(self, context):
     """Refresh the Offset Image Tag for re-rendering.
@@ -372,10 +381,20 @@ def update_offset_image(self, context):
     log.info("~ Update Offset ~")
     self.changed = True
     self.update_offset_image_tag = True
+    # Always run auto-calc to update the Calculation Details display cache.
+    # Values are only written back to the operation when toggles are enabled.
+    try:
+        machine = context.scene.cam_machine
+        from .cutting_params import auto_calculate_for_operation
+        auto_calculate_for_operation(self, machine)
+    except Exception as e:
+        log.warning(f"[update_offset_image] auto_calculate failed: {e}")
+        machine = None
+
     if self.use_rest_machining:
         from ..strategies.rest_machining import suggest_layer_height
 
-        suggest_layer_height(self)
+        suggest_layer_height(self, machine)
 
 
 def update_Z_buffer_image(self, context):
@@ -397,7 +416,11 @@ def update_Z_buffer_image(self, context):
     if self.use_rest_machining:
         from ..strategies.rest_machining import suggest_layer_height
 
-        suggest_layer_height(self)
+        try:
+            machine = context.scene.cam_machine
+        except Exception:
+            machine = None
+        suggest_layer_height(self, machine)
 
 
 def update_image_size_y(self, context):
